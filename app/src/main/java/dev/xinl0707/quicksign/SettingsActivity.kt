@@ -1,6 +1,7 @@
 package dev.xinl0707.quicksign
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -579,6 +580,30 @@ class SettingsActivity : Activity() {
         val exportBtn = button("导出调试记录", LIGHT, ACCENT)
         exportBtn.setOnClickListener { exportDebug() }
         debugBlock.addView(exportBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
+
+        // 弹窗测试：演示各类结果浮层（签到成功/签到码无效/等待转圈/大数字+彩带/Toast），便于核对样式与层级
+        val testBtn = button("弹窗测试", LIGHT, ACCENT)
+        testBtn.setOnClickListener {
+            val items = arrayOf("签到成功覆盖页", "签到码无效弹窗", "结果等待转圈", "大数字 + 彩带", "Toast 提示")
+            AlertDialog.Builder(this)
+                .setTitle("弹窗测试（返回主界面后触发）")
+                .setItems(items) { _, which ->
+                    val type = when (which) {
+                        0 -> "success"
+                        1 -> "invalid"
+                        2 -> "waiting"
+                        3 -> "bigcode"
+                        else -> "toast"
+                    }
+                    startActivity(Intent(this, MainActivity::class.java)
+                        .putExtra("test_overlay", type)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+                }
+                .show()
+        }
+        debugBlock.addView(testBtn, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
 

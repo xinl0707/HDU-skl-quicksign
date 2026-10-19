@@ -435,6 +435,44 @@ class MainActivity : Activity() {
         }
         // 从设置页返回：重新读取课表缓存（设置页导入新课表后立即生效，无需重启 App）
         refreshScheduleFromStore()
+        // 调试：设置页「弹窗测试」入口触发的各类结果浮层演示（消费后即移除，避免每次 onResume 重放）
+        val test = intent.getStringExtra("test_overlay")
+        if (test != null) {
+            intent.removeExtra("test_overlay")
+            runTestOverlay(test)
+        }
+    }
+
+    /** 调试：弹窗测试入口（设置页「弹窗测试」触发）——演示各类结果浮层，方便核对样式与层级 */
+    private fun runTestOverlay(type: String) {
+        DebugLog.append("test overlay: $type")
+        when (type) {
+            "success" -> {
+                // 模拟一次真实成功：填好覆盖页文案后弹覆盖页（带彩带），进结果窗口使「返回签到」流程完整
+                resultCourseText?.text = "中国近现代史纲要"
+                resultHoursText?.text = "旷课学时 0 / 课程总学时 48"
+                resultRatioText?.text = "0.00%"
+                resultStatsText?.text = "正常 2    请假 0    迟到 0    旷课 0"
+                lastSubmitAt = System.currentTimeMillis()
+                showSignResultOverlay()
+            }
+            "invalid" -> {
+                // 签到码无效弹窗（快速震动两下 + 或网络超时小字 + 重新输入按钮）
+                lastSubmitAt = System.currentTimeMillis()
+                showInvalidOverlay()
+            }
+            "waiting" -> {
+                // 结果等待：键盘位大转圈过渡，5 秒后自动收起
+                showResultWaiting()
+                handler.postDelayed({ hideResultWaiting() }, 5000)
+            }
+            "bigcode" -> {
+                // 输入瞬间大数字 + 彩带，3 秒后自动收起
+                showBigCodeOverlay("8888")
+                handler.postDelayed({ dismissBigCodeOverlay() }, 3000)
+            }
+            "toast" -> toast("Toast 提示示例：签到码已提交")
+        }
     }
 
     /** 重新从本地课表缓存解析并刷新显示（设置页导入/清除后返回主界面调用） */
@@ -461,6 +499,12 @@ class MainActivity : Activity() {
             return
         }
         super.onBackPressed()
+    }
+
+    /** singleTask：设置页「弹窗测试」等入口复用本实例时接收新 Intent */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     override fun onDestroy() {
@@ -918,8 +962,10 @@ class MainActivity : Activity() {
         resultCard.addView(backBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(20) })
+        // 覆盖页卡片：固定宽度（屏宽减边距）避免 WRAP_CONTENT + MATCH_PARENT 组合下长文案
+        // （课程名/提醒/考勤统计）换行异常显示不全；高度随内容自适应
         resultOverlay?.addView(resultCard, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            resources.displayMetrics.widthPixels - dp(48), FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.CENTER
         ))
         rootFrame.addView(resultOverlay, FrameLayout.LayoutParams(
@@ -2196,13 +2242,21 @@ class MainActivity : Activity() {
                     }
                 }
                 res != null && res.startsWith("fail:") -> {
-                    filling = false
-                    resultWatchActive = false   // 注入失败：取消结果监听
-                    val reason = res.removePrefix("fail:")
-                    statusText.text = "自动输入失败（$reason），请手动输入"
-                    addSpeechInfo("输入", "自动输入失败：$reason")
-                    toast("自动输入失败，请手动输入或直接在页面上操作")
-                    dismissBigCodeOverlay()
+                    // 页面可能已跳 #/sign/in/detail（盲输触发提交后键盘消失，count 检查失真）
+                    // → 实际已签到成功，不判失败：静默收尾，成功覆盖页由 URL 检测的 onSignSucceeded 负责
+                    val u = webView.url ?: ""
+                    if (u.contains("#/sign/in/detail") || signResultShown) {
+                        filling = false
+                        dismissBigCodeOverlay()
+                    } else {
+                        filling = false
+                        resultWatchActive = false   // 注入失败：取消结果监听
+                        val reason = res.removePrefix("fail:")
+                        statusText.text = "自动输入失败（$reason），请手动输入"
+                        addSpeechInfo("输入", "自动输入失败：$reason")
+                        toast("自动输入失败，请手动输入或直接在页面上操作")
+                        dismissBigCodeOverlay()
+                    }
                 }
                 else -> handler.postDelayed({ pollFillResult(gen, attempt + 1) }, 120)
             }

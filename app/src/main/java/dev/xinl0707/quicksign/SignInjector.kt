@@ -266,6 +266,8 @@ object SignInjector {
               function blindFill(i){
                 if (i >= code.length) {
                   setTimeout(function(){
+                    // 页面已跳 #/sign/in/detail = 盲输已触发提交并成功（键盘消失导致 filledCount 失真），直接判成功
+                    if (location.hash.indexOf('#/sign/in/detail') >= 0) { window.__fillDone = true; return; }
                     var n = filledCount();
                     if (n === code.length) { window.__fillDone = true; }
                     else {
