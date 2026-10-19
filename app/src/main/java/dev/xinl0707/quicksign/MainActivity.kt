@@ -181,7 +181,8 @@ class MainActivity : Activity() {
     private var lastToastKey = ""
     private var lastToastAt = 0L
 
-    // 桌面 UA 用于 SSO 电脑端登录；站点本身是移动端应用，回签到域恢复移动 UA（延迟初始化）
+    // 默认移动 UA（SSO 按屏幕尺寸判端，手机视口返回手机版登录页；
+    // 手机版已有"用户名密码"选项卡，jsAutoLogin 已适配注入——全部域统一移动 UA）
     private val defaultUA: String by lazy { WebSettings.getDefaultUserAgent(this) }
     private val desktopUA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -1009,15 +1010,9 @@ class MainActivity : Activity() {
      * - 签到站点（*.hdu.edu.cn）→ 恢复移动 UA（站点是移动端应用）
      */
     private fun applyUAFor(url: String) {
-        val host = Uri.parse(url).host?.lowercase() ?: return
-        val isSso = host == "sso.hdu.edu.cn" || host.endsWith(".sso.hdu.edu.cn") ||
-                host.contains("sso") || host.contains("auth") || host.contains("passport") || host.contains("cas")
-        val isSkl = host.endsWith("hdu.edu.cn") || host.endsWith("hdu.edu.cn.")
-        webView.settings.userAgentString = when {
-            isSso -> desktopUA
-            isSkl -> defaultUA
-            else -> webView.settings.userAgentString
-        }
+        // SSO 按屏幕尺寸判端（不是 UA）：手机视口 → 手机版登录页（有"用户名密码"选项卡，jsAutoLogin 已适配）。
+        // 历史遗留的 desktopUA 会与手机视口不匹配，导致 sso 服务端 302 踢回 cas 形成死循环——统一保持移动 UA。
+        webView.settings.userAgentString = defaultUA
     }
 
     private fun handleUrl(url: String): Boolean {
