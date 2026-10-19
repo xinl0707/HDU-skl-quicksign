@@ -248,6 +248,7 @@ class MainActivity : Activity() {
     private var speech: SpeechRecognizer? = null
     private var mimoEngine: MiMoSpeechEngine? = null
     private var listening = false
+    private var isPaused = false                  // 主界面是否在后台（设置页/课表/多任务等）：后台绝不启动麦克风监听
     private var listenAttempts = 0
     private var heardText = ""
     private var mimoRestartCount = 0 // 自动监听下瞬时错误自动重启次数
@@ -387,6 +388,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        isPaused = false
         // 从设置页/课表/考勤等界面返回后，立即允许自动登录与登录态探测
         autoLoginCooldownUntil = 0
         loginProbeCooldownUntil = 0
@@ -426,6 +428,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        isPaused = true
         // 离开主界面（设置页/课表/考勤/后台）：立即停止全部监听，任何非键盘界面都不监听
         stopListeningQuiet()
     }
@@ -1668,7 +1671,7 @@ class MainActivity : Activity() {
                         "${dayFmt.format(java.util.Date(next.start))} ${fmt.format(java.util.Date(next.start))}"
                     }
                     courseText.text = "当前无课"
-                    courseDetailText.text = "下一节课：${next.name} · $time 开始"
+                    courseDetailText.text = "${next.name} · $time 开始"   // 前缀"下一节课："已按用户要求删除
                 } else {
                     courseText.text = "当前无课"
                     courseDetailText.text = "今天没有更多课了"
@@ -2413,9 +2416,13 @@ class MainActivity : Activity() {
     /** 自动监听：登录进入签到页后自动开始持续切片识别（仅 MiMo 引擎 + 已配 Key） */
     private fun maybeAutoListen() {
         if (!credStore.autoListen()) return
+        // 主界面在后台（设置页/课表/多任务/切走）：绝不启动监听——pollTick 后台仍会轮询，
+        // 不加此判断会在用户切到设置页后重新拉起麦克风（曾实测在设置页说话仍被识别提交）
+        if (isPaused) return
         // 只在首页键盘面板监听；切到网页/设置/课表等任何其他界面都不监听
         if (!signPanelShown) return
         if (signResultShown) return   // 签到完成覆盖页显示中不监听
+        if (invalidShown) return      // 签到码无效弹窗显示中不监听（用户在查看结果/操作弹窗）
         if (listening || filling) return
         if (!signReady) return
         if (!hasRecordPermission()) return
