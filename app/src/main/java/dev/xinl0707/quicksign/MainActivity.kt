@@ -159,6 +159,8 @@ class MainActivity : Activity() {
     private lateinit var courseDetailText: TextView
     private lateinit var clockText: TextView
     private var lastLocReqAt = 0L                 // 原生定位请求节流
+    private var isPaused = false                  // 主界面是否在后台（设置页/课表等前台时不弹登录 toast、不主动登录）
+    private var pendingLoginToast = false         // 从设置页保存返回后，登录页提示"手动点登录"只弹一次
     // 面板标题：加载中显示"加载中…"，就绪后显示"签到就绪"
     private lateinit var panelTitleText: TextView
     private var locDisplayText: TextView? = null   // 经纬度显示（时间下方，N/S/E/W + 度数）
@@ -387,6 +389,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        isPaused = false
+        pendingLoginToast = true   // 回到前台（含从设置页保存返回）：允许弹一次"手动点登录"提示
         // 从设置页/课表/考勤等界面返回后，立即允许自动登录与登录态探测
         autoLoginCooldownUntil = 0
         loginProbeCooldownUntil = 0
@@ -426,6 +430,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        isPaused = true
         // 离开主界面（设置页/课表/考勤/后台）：立即停止全部监听，任何非键盘界面都不监听
         stopListeningQuiet()
     }
@@ -1802,10 +1807,16 @@ class MainActivity : Activity() {
                     // 最近 30 分钟内登录成功过：页面经过登录页只是 CAS 校验链（cookie 有效，1-2 秒回跳），
                     // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，重新填表并提示手动点击
                     if (System.currentTimeMillis() - lastLoginPageSeenAt > 15000) {
+                        showWebOnly()
                         statusText.text = "登录页：已填账号密码，请手动点击登录"
                         tryAutoLogin(submit = false)
-                        toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
+                        if (pendingLoginToast) {
+                            pendingLoginToast = false
+                            toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
+                        }
                     } else {
+                        // 认证校验回跳中：显示网页让用户看到登录页，键盘覆盖不遮挡认证界面
+                        showWebOnly()
                         statusText.text = "登录校验中…（页面回跳中）"
                     }
                 } else if (autoLoginSubmitted) {
@@ -1828,11 +1839,16 @@ class MainActivity : Activity() {
                         statusText.text = "登录页：已自动提交，等待页面处理…"
                     }
                 } else {
-                    // 后台自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
-                    // toast 提示用户手动点击登录按钮；点登录后回跳签到页，由 loginFlowPending 自动切回面板
+                    // 杭电认证界面（统一身份认证）：一律显示网页，键盘覆盖屏蔽，避免"弹到键盘一直转圈"；
+                    // 自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
+                    // toast 只在保存返回主界面后弹一次（填写账号自动保存时不弹，仅点保存后弹）
+                    showWebOnly()
                     statusText.text = "登录页：已填账号密码，请手动点击登录"
                     tryAutoLogin(submit = false)
-                    toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
+                    if (pendingLoginToast) {
+                        pendingLoginToast = false
+                        toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
+                    }
                 }
             }
             sign || sign2 -> {
@@ -2639,11 +2655,11 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 经纬度格式化：N 30.003435°, E 120.661277°（原始精度不截断） */
+    /** 经纬度格式化：N 30.0°, E 120.7°（保留一位小数） */
     private fun formatLocation(lat: Double, lng: Double): String {
         val ns = if (lat >= 0) "N" else "S"
         val ew = if (lng >= 0) "E" else "W"
-        return "$ns ${Math.abs(lat)}°, $ew ${Math.abs(lng)}°"
+        return "$ns ${String.format("%.1f", Math.abs(lat))}°, $ew ${String.format("%.1f", Math.abs(lng))}°"
     }
 
     /** 定位更新回调：位置变化时刷新经纬度显示 */
