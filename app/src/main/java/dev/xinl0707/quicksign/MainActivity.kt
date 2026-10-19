@@ -117,6 +117,17 @@ class MainActivity : Activity() {
     private lateinit var bigOverlay: FrameLayout
     private lateinit var bigCodeText: TextView
     private var bigOverlayShown = false
+
+    // 签到完成覆盖页（输码后 URL 跳 #/sign/in/detail = 签到成功，自动弹出展示考勤统计）
+    private var resultOverlay: FrameLayout? = null
+    private var resultCourseText: TextView? = null
+    private var resultHoursText: TextView? = null
+    private var resultRatioText: TextView? = null
+    private var resultStatsText: TextView? = null
+    private var signResultShown = false     // 覆盖页显示中
+    private var lastSubmitAt = 0L           // 最近一次提交签到码时间（结果判定窗口）
+    private var resultWatchActive = false   // 输码后结果监听进行中
+    private var resultWatchStartAt = 0L     // 结果监听启动时间（10 秒超时判定签到码无效）
     // 内嵌启动层：品牌色开屏，期间后台并行加载网页/探测登录（不纯等待）
     private lateinit var splashLayer: FrameLayout
     private var splashDismissed = false
@@ -674,6 +685,112 @@ class MainActivity : Activity() {
         buildConfettiLayer()
         trace("buildUi bigOverlay ok")
 
+        // 签到完成覆盖页：输码后 URL 跳 #/sign/in/detail（签到成功）自动弹出，
+        // 全屏展示考勤统计（数据从网页正文解析），用户点"返回签到"关闭后回签到页继续签下一门
+        resultOverlay = FrameLayout(this).apply {
+            visibility = View.GONE
+            setBackgroundColor(0x88000000.toInt())   // 半透明遮罩
+        }
+        val resultCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedBg(CARD, 26)
+            setPadding(dp(30), dp(28), dp(30), dp(26))
+        }
+        // 成功徽章：圆形主题色底 + 白色对勾
+        val badge = TextView(this).apply {
+            text = "✓"
+            textSize = 42f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            background = roundedBg(ACCENT, 100)
+        }
+        resultCard.addView(badge, LinearLayout.LayoutParams(dp(74), dp(74)))
+        val resultTitle = TextView(this).apply {
+            text = "签到完成"
+            textSize = 27f
+            gravity = Gravity.CENTER
+            setTextColor(TEXT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(0), dp(16), dp(0), dp(0))
+        }
+        resultCard.addView(resultTitle, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        resultCourseText = TextView(this).apply {
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(SUB)
+            setPadding(dp(0), dp(8), dp(0), dp(0))
+        }
+        resultCard.addView(resultCourseText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        // 考勤统计卡片
+        val statsCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(LIGHT, 14)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        statsCard.addView(TextView(this).apply {
+            text = "学勤预警"
+            textSize = 12f
+            setTextColor(SUB)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        resultHoursText = TextView(this).apply {
+            textSize = 15f
+            setTextColor(TEXT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(0), dp(6), dp(0), dp(2))
+        }
+        statsCard.addView(resultHoursText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        resultRatioText = TextView(this).apply {
+            textSize = 24f
+            setTextColor(ACCENT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }
+        statsCard.addView(resultRatioText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        resultStatsText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(TEXT)
+            setPadding(dp(0), dp(10), dp(0), dp(0))
+        }
+        statsCard.addView(resultStatsText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        resultCard.addView(statsCard, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(18) })
+        // 提醒小字（网页真实文案）
+        resultCard.addView(TextView(this).apply {
+            text = "提醒：旷课累计超过教学时数三分之一及以上者，取消本课程考试资格。"
+            textSize = 11f
+            setTextColor(SUB)
+            setPadding(dp(0), dp(12), dp(0), dp(0))
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        // 返回签到按钮：关闭覆盖页 → 回签到页继续
+        val backBtn = button("返回签到", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        backBtn.setOnClickListener { dismissSignResultOverlay() }
+        resultCard.addView(backBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(20) })
+        resultOverlay?.addView(resultCard, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        rootFrame.addView(resultOverlay, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+
         // 启动层最后 addView：rootFrame 是 FrameLayout，后加的在最上层——
         // 主界面先铺好，splash 盖在最上面才可见（首帧品牌色由 windowBackground 兜底）
         if (::splashLayer.isInitialized) {
@@ -819,12 +936,11 @@ class MainActivity : Activity() {
         launchConfetti()   // 彩带喷射
     }
 
-    /** 网页确认输入完成：收掉大数字浮层（彩带残留动画终止），切换到网页显示签到结果 */
+    /** 网页确认输入完成：收掉大数字浮层（彩带残留动画终止）。
+     *  不再主动切网页——输码后停留键盘面板，由后台结果监听判定：URL 跳 #/sign/in/detail = 成功（弹覆盖页），
+     *  10 秒未跳 = 签到码无效（提示重输）；网页只能通过"查看网页"按钮进入 */
     private fun dismissBigCodeOverlay() {
-        if (!bigOverlayShown) {
-            showWebOnly()
-            return
-        }
+        if (!bigOverlayShown) return
         bigOverlayShown = false
         stopConfetti()
         bigOverlay.animate().alpha(0f).scaleX(0.88f).scaleY(0.88f).setDuration(220)
@@ -832,7 +948,6 @@ class MainActivity : Activity() {
                 bigOverlay.visibility = View.GONE
                 bigOverlay.scaleX = 1f
                 bigOverlay.scaleY = 1f
-                showWebOnly()
             }.start()
     }
 
@@ -1242,6 +1357,18 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // 输码后结果监听（不进网页也能知道签到结果）：
+        // URL 跳 #/sign/in/detail = 签到成功 → 提取考勤数据弹覆盖页；
+        // 10 秒仍未跳转 = 站点未确认（签到码无效/不在签到时间）→ 提示重输
+        if (resultWatchActive && !signResultShown) {
+            if (curUrl.contains("#/sign/in/detail")) {
+                resultWatchActive = false
+                onSignSucceeded()
+            } else if (System.currentTimeMillis() - resultWatchStartAt > 10000) {
+                resultWatchActive = false
+                onSignInvalid()
+            }
+        }
         evalJs(SignInjector.JS_DETECT_STATE) { raw ->
             handleState(raw)
             flushPendingPanelInput()
@@ -1270,9 +1397,14 @@ class MainActivity : Activity() {
                 signReady = false
                 signPageFirstSeenAt = 0L
                 wasOnLoginPage = false
-                // 完成检测暂不切换界面：签到结果以网页实际显示为准
-                // （尚未爬取签到成功界面，signed 判定不可靠，切回面板会打断用户看结果）
                 prevSigned = true
+                // 签到完成检测（URL 已跳 #/sign/in/detail）：
+                // 提交后 30 秒内且覆盖页未显示 → 判定本次签到成功，提取考勤数据弹覆盖页。
+                // 覆盖页关闭后 lastSubmitAt 清零，之后停在 detail 页也不会再弹（用户可回签到页签下一门）
+                val inResultWindow = System.currentTimeMillis() - lastSubmitAt < 30000
+                if (inResultWindow && !signResultShown && lastSubmitAt != 0L) {
+                    onSignSucceeded()
+                }
             }
             hasPw -> {
                 signReady = false
@@ -1595,6 +1727,9 @@ class MainActivity : Activity() {
         filling = true
         stopListening()
         lastFilledCode = code
+        lastSubmitAt = System.currentTimeMillis()   // 结果判定窗口起点：URL 跳 detail = 成功，10 秒未跳 = 无效
+        resultWatchActive = true
+        resultWatchStartAt = System.currentTimeMillis()
         statusText.text = "正在输入 $code…"
         addSpeechInfo("输入", "自动输入 $code")
         appendLog("fill: $code")
@@ -1610,6 +1745,7 @@ class MainActivity : Activity() {
         if (gen != fillGen) return // 已被更新的输入取代
         if (attempt > 60) {
             filling = false
+            resultWatchActive = false   // 输入超时：取消结果监听（不是签到码无效）
             statusText.text = "自动输入超时，请手动输入"
             toast("自动输入超时，请手动输入")
             dismissBigCodeOverlay()
@@ -1619,9 +1755,9 @@ class MainActivity : Activity() {
             when {
                 res == "ok" -> {
                     filling = false
-                    statusText.text = "已输入签到码，等待页面确认…"
-                    addSpeechInfo("输入", "自动输入 $lastFilledCode 完成，等待页面确认")
-                    // 网页已确认输入完成：收起大数字浮层（彩带停止），动画切到网页显示签到结果
+                    statusText.text = "已输入签到码，等待签到结果…"
+                    addSpeechInfo("输入", "自动输入 $lastFilledCode 完成，等待签到结果")
+                    // 网页已确认输入完成：收起大数字浮层（彩带停止），停留键盘面板等后台结果判定
                     dismissBigCodeOverlay()
                     // Debug：提交后连续多次抓取结果页面（跳转/异步渲染慢，多采样 5 次 × 2 秒，持续约 10 秒），
                     // 保证能抓到「签到成功页」或「签到码不存在」的真实文案
@@ -1631,6 +1767,7 @@ class MainActivity : Activity() {
                 }
                 res != null && res.startsWith("fail:") -> {
                     filling = false
+                    resultWatchActive = false   // 注入失败：取消结果监听
                     val reason = res.removePrefix("fail:")
                     statusText.text = "自动输入失败（$reason），请手动输入"
                     addSpeechInfo("输入", "自动输入失败：$reason")
@@ -1639,6 +1776,87 @@ class MainActivity : Activity() {
                 }
                 else -> handler.postDelayed({ pollFillResult(gen, attempt + 1) }, 120)
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ 签到结果判定与覆盖页
+
+    /** 签到成功：从网页正文提取课程名与考勤统计 → 弹出签到完成覆盖页 */
+    private fun onSignSucceeded() {
+        appendLog("sign succeeded: #/sign/in/detail")
+        // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 3 次）
+        fun extract(attempt: Int) {
+            evalJs("(function(){try{return document.body.innerText||''}catch(e){return ''}})()") { text ->
+                val t = text ?: ""
+                if (t.contains("签到完成") || attempt >= 2) {
+                    parseSignResult(t)
+                    showSignResultOverlay()
+                } else if (attempt < 3) {
+                    handler.postDelayed({ extract(attempt + 1) }, 600)
+                } else {
+                    parseSignResult(t)
+                    showSignResultOverlay()
+                }
+            }
+        }
+        extract(0)
+    }
+
+    /** 解析 detail 页正文：课程名 + 学勤预警 + 考勤四格（真实结构：签到完成/课程名/考勤统计/学勤预警/旷课学时x/课程总学时y/比例%/正常n/请假n/迟到n/旷课n） */
+    private fun parseSignResult(text: String) {
+        resultCourseText?.text = ""
+        resultHoursText?.text = "旷课学时 0 / 课程总学时 0"
+        resultRatioText?.text = "0.00%"
+        resultStatsText?.text = "正常 0    请假 0    迟到 0    旷课 0"
+        val lines = text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        val idx = lines.indexOf("签到完成")
+        if (idx >= 0 && idx + 1 < lines.size) {
+            resultCourseText?.text = lines[idx + 1]
+        }
+        val reHours = Regex("旷课学时\\s*(\\d+)\\s*/\\s*课程总学时\\s*(\\d+)")
+        reHours.find(text)?.let { m ->
+            resultHoursText?.text = "旷课学时 ${m.groupValues[1]} / 课程总学时 ${m.groupValues[2]}"
+        }
+        val reRatio = Regex("(\\d+\\.\\d+)%")
+        reRatio.find(text)?.let { m -> resultRatioText?.text = m.groupValues[1] + "%" }
+        val reStats = Regex("正常\\s*(\\d+).*?请假\\s*(\\d+).*?迟到\\s*(\\d+).*?旷课\\s*(\\d+)", RegexOption.DOT_MATCHES_ALL)
+        reStats.find(text)?.let { m ->
+            resultStatsText?.text = "正常 ${m.groupValues[1]}    请假 ${m.groupValues[2]}    迟到 ${m.groupValues[3]}    旷课 ${m.groupValues[4]}"
+        }
+    }
+
+    /** 签到码无效：10 秒未跳 detail，站点未确认（码错/不在签到时间）→ 提示重输，恢复键盘 */
+    private fun onSignInvalid() {
+        appendLog("sign invalid: 10s no detail redirect")
+        statusText.text = "签到码无效，请重试"
+        toast("签到码无效，请确认后重输")
+        manualCode = ""
+        updatePanelDisplay()
+    }
+
+    /** 显示签到完成覆盖页（淡入） */
+    private fun showSignResultOverlay() {
+        if (signResultShown) return
+        signResultShown = true
+        prevSigned = true
+        signReady = false
+        val ov = resultOverlay ?: return
+        ov.alpha = 0f
+        ov.visibility = View.VISIBLE
+        ov.animate().alpha(1f).setDuration(200).start()
+    }
+
+    /** 关闭覆盖页 → 回签到页（重新加载 #/sign/in 恢复输入框），可继续签下一门 */
+    private fun dismissSignResultOverlay() {
+        if (!signResultShown) return
+        signResultShown = false
+        resultOverlay?.visibility = View.GONE
+        lastSubmitAt = 0L     // 结果窗口失效：后续停在 detail 页不再触发覆盖页
+        prevSigned = false    // 允许导航回签到页
+        statusText.text = "签到就绪"
+        val u = webView.url ?: ""
+        if (u.contains("#/sign/in/detail") || !u.contains("#/sign/")) {
+            webView.loadUrl(SignInjector.HOME_URL)   // 整页导航回签到页，恢复输入框
         }
     }
 
@@ -1756,6 +1974,7 @@ class MainActivity : Activity() {
         if (!credStore.autoListen()) return
         // 只在首页键盘面板监听；切到网页/设置/课表等任何其他界面都不监听
         if (!signPanelShown) return
+        if (signResultShown) return   // 签到完成覆盖页显示中不监听
         if (listening || filling) return
         if (!signReady) return
         if (!hasRecordPermission()) return
