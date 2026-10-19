@@ -221,7 +221,9 @@ class MiMoSpeechEngine(
     /** 读最近 windowMs 毫秒的 PCM（环形绕回安全）；有效数据不足时返回 null */
     private fun readWindow(ms: Int): ByteArray? {
         synchronized(lock) {
-            val have = min(writtenTotal, ring.size.toLong()).toInt()
+            // writtenTotal 是采样点计数（每 sample +1），转字节数需 ×2；
+            // 修复前把采样点数当字节数与 ring.size（字节数）min，导致每片最多只读 5 秒而非 10 秒
+            val have = min(writtenTotal * 2L, ring.size.toLong()).toInt()
             if (have < BYTES_PER_SEC / 2) return null
             val readLen = min(ms * BYTES_PER_SEC / 1000, have)
             val start = (writePos - readLen + ring.size) % ring.size
