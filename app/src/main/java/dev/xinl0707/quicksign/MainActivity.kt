@@ -141,6 +141,7 @@ class MainActivity : Activity() {
     private var signReady = false
     private var prevSigned = false
     private var signPageFirstSeenAt = 0L
+    private var lastSignNavAt = 0L        // 回切签到页路由节流
     private var lastReloadAt = 0L
     private var autoLoginCooldownUntil = 0L
     private var ssoLoadCount = 0          // 连续 SSO 域页面加载计数（防重定向死循环）
@@ -268,6 +269,7 @@ class MainActivity : Activity() {
     }
 
     /** 启动埋点：逐步写文件，崩溃后可从文件最后一行定位崩在哪一步 */
+    private var splashShownAt = 0L
     private var traceStart = 0L
     private fun trace(t: String) {
         try {
@@ -710,13 +712,19 @@ class MainActivity : Activity() {
         rootFrame.addView(splashLayer, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        // 兜底：最多展示约 0.5 秒（页面/登录就绪会提前淡出；首帧已是品牌色，等待尽量短）
-        handler.postDelayed({ dismissSplash() }, 500)
+        // 兜底：最多展示约 0.8 秒（页面/登录就绪也不会早于最短时长淡出，保证开屏可见）
+        splashShownAt = System.currentTimeMillis()
+        handler.postDelayed({ dismissSplash() }, 800)
     }
 
-    /** 淡出启动层（幂等） */
+    /** 淡出启动层（幂等）；页面/登录就绪也会提前调用，但保证至少展示约 0.8 秒，避免一闪而过 */
     private fun dismissSplash() {
         if (splashDismissed || !::splashLayer.isInitialized) return
+        val remain = 800 - (System.currentTimeMillis() - splashShownAt)
+        if (remain > 0) {
+            handler.postDelayed({ dismissSplash() }, remain)
+            return
+        }
         splashDismissed = true
         try {
             splashLayer.animate().alpha(0f).setDuration(450)
@@ -1181,6 +1189,16 @@ class MainActivity : Activity() {
         } else {
             ssoBlockSeconds = 0
         }
+        // 登录回跳后 skl 站点默认首页是课表(#/call/course)：签到面板显示时，
+        // 非签到路由立即用 JS 改 hash 切回（不整页重载、不闪白；节流 2 秒防循环）
+        if (signPanelShown) {
+            val u = curUrl
+            if (u.contains("hdu.edu.cn") && u.contains("#/") && !u.contains("#/sign/") &&
+                    System.currentTimeMillis() - lastSignNavAt > 2000) {
+                lastSignNavAt = System.currentTimeMillis()
+                evalJs("if (location.hash.indexOf('#/sign/in') < 0) { location.hash = '#/sign/in'; 'ok' } else 'noop'") { _ -> }
+            }
+        }
         evalJs(SignInjector.JS_DETECT_STATE) { raw ->
             handleState(raw)
             flushPendingPanelInput()
@@ -1317,15 +1335,26 @@ class MainActivity : Activity() {
                 signReady = false
                 prevSigned = false
                 signPageFirstSeenAt = 0L
-                // 显示当前页面地址（截断），便于定位卡在哪一步
                 val cur = webView.url ?: ""
-                val brief = try {
-                    val u = Uri.parse(cur)
-                    (u.host ?: "") + (u.path ?: "") + (u.query?.take(12) ?: "")
-                } catch (e: Exception) {
-                    cur.takeLast(50)
+                // 登录回跳后页面短暂停在课表/首页等 skl 站内非签到路由：
+                // 保持面板就绪（键盘不闪没），路由修正会立刻切回签到页
+                if (signPanelShown && cur.contains("hdu.edu.cn") && cur.contains("#/") && !cur.contains("#/sign/")) {
+                    panelTitleText.text = "签到就绪"
+                    panelTitleText.setTextColor(TEXT)
+                    panelKeyGrid?.visibility = View.VISIBLE
+                    panelCodeDisplay.visibility = View.VISIBLE
+                    loadingBar?.visibility = View.GONE
+                    statusText.text = "正在回到签到页…"
+                } else {
+                    // 显示当前页面地址（截断），便于定位卡在哪一步
+                    val brief = try {
+                        val u = Uri.parse(cur)
+                        (u.host ?: "") + (u.path ?: "") + (u.query?.take(12) ?: "")
+                    } catch (e: Exception) {
+                        cur.takeLast(50)
+                    }
+                    statusText.text = "页面加载中…（$brief）"
                 }
-                statusText.text = "页面加载中…（$brief）"
                 maybeProbeLogin() // SSO 登录回跳 skl 后，在这里探测已登录并切回签到页
             }
         }
