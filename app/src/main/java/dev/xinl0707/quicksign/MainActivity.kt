@@ -187,6 +187,7 @@ class MainActivity : Activity() {
     private var permCard: LinearLayout? = null
     private var guideNextBtn: Button? = null
     private var guidePermHint: TextView? = null
+    private var pendingRecordToast = false   // 引导期间拒绝麦克风：等引导结束后再补弹提示
     // 签到码无效弹窗：3 秒未跳 detail 弹出（非 toast），后台继续检测 3 秒缓冲，缓冲内成功则切签到成功
     private var invalidOverlay: FrameLayout? = null
     private var invalidShown = false
@@ -332,7 +333,10 @@ class MainActivity : Activity() {
             }
             setupWebView()
             trace("after setupWebView")
-            requestNeededPermissions()
+            // 首次引导（未同意免责声明）时不立即请求权限：系统权限弹窗等阅读完免责声明后由引导页激活
+            if (credStore.disclaimerAccepted()) {
+                requestNeededPermissions()
+            }
             // 打开 App 默认显示原生签到面板（网页隐藏后台加载/登录），可立即输入
             showSignPanel()
             trace("after showSignPanel")
@@ -1098,6 +1102,11 @@ class MainActivity : Activity() {
         guideNextBtn!!.isEnabled = false
         guideNextBtn!!.setOnClickListener {
             ov.visibility = View.GONE   // 关闭引导层
+            // 引导期间被拒绝的麦克风提示补弹（等首次界面结束后显示）
+            if (pendingRecordToast) {
+                pendingRecordToast = false
+                toastOnce("no-record", "未授予麦克风权限，语音签到不可用，可选手动输入")
+            }
             startActivity(Intent(this, SettingsActivity::class.java))   // 第三步：直接进入设置界面
         }
         pCard.addView(guideNextBtn, LinearLayout.LayoutParams(
@@ -2573,7 +2582,12 @@ class MainActivity : Activity() {
             }
         }
         if (!hasRecordPermission()) {
-            toastOnce("no-record", "未授予麦克风权限，语音签到不可用，可选手动输入")
+            // 引导界面期间不弹"未授权麦克风"toast（避免盖在首次引导上），记录等引导结束后补弹
+            if (guideOverlay?.visibility == View.VISIBLE) {
+                pendingRecordToast = true
+            } else {
+                toastOnce("no-record", "未授予麦克风权限，语音签到不可用，可选手动输入")
+            }
         }
         // 首次引导权限步：全部授予后启用"下一步"
         updateGuidePermState()
