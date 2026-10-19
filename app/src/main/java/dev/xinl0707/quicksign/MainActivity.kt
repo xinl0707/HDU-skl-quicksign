@@ -223,6 +223,7 @@ class MainActivity : Activity() {
     private var lastProbeOkAt = 0L        // 最近一次探测成功时间（登录记忆，防"明明登录了却跳统一认证"误报）
     private var lastLoginPageSeenAt = 0L  // 登录页首次出现时间（超时判定 cookie 是否真失效）
     private var wasOnLoginPage = false    // 页面曾停在登录页（自动登录流程中）；probe ok 时据此决定是否切回面板
+    private var loginFlowPending = false  // 登录流程进行中（页面经过登录页）；probe ok 后消费并自动切回签到面板
     private var lastReloadAt = 0L
     private var autoLoginCooldownUntil = 0L
     private var ssoLoadCount = 0          // 连续 SSO 域页面加载计数（防重定向死循环）
@@ -1755,6 +1756,7 @@ class MainActivity : Activity() {
                 prevSigned = false
                 signPageFirstSeenAt = 0L
                 wasOnLoginPage = true
+                loginFlowPending = true   // 页面在登录页：登录流程进行中，完成后自动切回签到面板
                 if (lastLoginPageSeenAt == 0L) lastLoginPageSeenAt = System.currentTimeMillis()
                 if (!credStore.hasCredentials()) {
                     // 没保存账号：必须切到网页让用户看到登录页
@@ -1767,10 +1769,11 @@ class MainActivity : Activity() {
                     tryAutoLogin(submit = false)
                 } else if (likelyLoggedIn()) {
                     // 最近 30 分钟内登录成功过：页面经过登录页只是 CAS 校验链（cookie 有效，1-2 秒回跳），
-                    // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，才重新登录
+                    // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，重新填表并提示手动点击
                     if (System.currentTimeMillis() - lastLoginPageSeenAt > 15000) {
-                        statusText.text = "登录页：重新自动登录中…"
-                        tryAutoLogin(submit = true)
+                        statusText.text = "登录页：已填账号密码，请手动点击登录"
+                        tryAutoLogin(submit = false)
+                        toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
                     } else {
                         statusText.text = "登录校验中…（页面回跳中）"
                     }
@@ -1794,9 +1797,11 @@ class MainActivity : Activity() {
                         statusText.text = "登录页：已自动提交，等待页面处理…"
                     }
                 } else {
-                    // 后台自动登录中：保持原生面板，用户可继续提前输码
-                    statusText.text = "登录页：自动登录中…（可先输签到码）"
-                    tryAutoLogin(submit = true)
+                    // 后台自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
+                    // toast 提示用户手动点击登录按钮；点登录后回跳签到页，由 loginFlowPending 自动切回面板
+                    statusText.text = "登录页：已填账号密码，请手动点击登录"
+                    tryAutoLogin(submit = false)
+                    toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
                 }
             }
             sign || sign2 -> {
@@ -2008,11 +2013,14 @@ class MainActivity : Activity() {
                         if (panelCodeDisplay.text != "签到完成") {
                             statusText.text = "签到就绪（已登录）"
                         }
-                        // 仅当页面刚走完自动登录流程时切回键盘面板；
+                        // 仅当页面刚走完登录流程时切回键盘面板（自动提交或手动点击登录后回跳签到页）；
                         // 用户主动看网页（如提交后看签到结果）时保持网页不切换
-                        if (wasOnLoginPage) {
+                        if (wasOnLoginPage || loginFlowPending) {
                             wasOnLoginPage = false
-                            showSignPanel()
+                            loginFlowPending = false
+                            if (!prevSigned && !signResultShown) {
+                                showSignPanel()
+                            }
                         }
                         // 认证成功：本次刚自动提交登录且页面不在签到页 → 等 1 秒重建 Activity（不退出进程），
                         // cookie 已有效，重建后直接稳定回签到页，避开认证回跳造成的路由错乱
@@ -2576,6 +2584,8 @@ class MainActivity : Activity() {
     }
 
     private fun requestNeededPermissions() {
+        // 首次引导显示中不自动弹权限：系统权限弹窗只能由引导第二步"授予权限"按钮激活
+        if (guideOverlay?.visibility == View.VISIBLE) return
         val need = mutableListOf<String>()
         if (!hasRecordPermission()) need.add(Manifest.permission.RECORD_AUDIO)
         if (!hasLocationPermission()) {
