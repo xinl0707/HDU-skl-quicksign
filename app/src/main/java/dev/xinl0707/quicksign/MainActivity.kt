@@ -268,10 +268,13 @@ class MainActivity : Activity() {
     }
 
     /** 启动埋点：逐步写文件，崩溃后可从文件最后一行定位崩在哪一步 */
+    private var traceStart = 0L
     private fun trace(t: String) {
         try {
+            if (traceStart == 0L) traceStart = System.currentTimeMillis()
+            val el = System.currentTimeMillis() - traceStart
             val f = java.io.File(filesDir, "startup.log")
-            java.io.FileOutputStream(f, true).use { it.write("$t\n".toByteArray()) }
+            java.io.FileOutputStream(f, true).use { it.write("[$el ms] $t\n".toByteArray()) }
         } catch (e: Exception) {}
     }
 
@@ -349,6 +352,8 @@ class MainActivity : Activity() {
             setBackgroundColor(BG)
         }
         this.rootFrame = rootFrame
+        // 启动层立即上屏（首帧即品牌色开屏），主 UI 继续在后台构建、WebView 随后加载
+        buildSplashLayer()
         // 状态栏/导航栏配色跟随当前主题风格（edge-to-edge 下内容已避开系统栏）
         applySystemBars()
 
@@ -648,7 +653,6 @@ class MainActivity : Activity() {
         trace("buildUi bigOverlay ok")
 
         setContentView(rootFrame)
-        buildSplashLayer()
         // 秒级时钟：签到面板顶部显示当前时间（精确到秒）
         handler.post(object : Runnable {
             override fun run() {
@@ -706,8 +710,8 @@ class MainActivity : Activity() {
         rootFrame.addView(splashLayer, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        // 兜底：最多展示约 1.6 秒（页面/登录就绪会提前淡出）
-        handler.postDelayed({ dismissSplash() }, 1600)
+        // 兜底：最多展示约 1 秒（页面/登录就绪会提前淡出；首帧已是品牌色，缩短等待）
+        handler.postDelayed({ dismissSplash() }, 1000)
     }
 
     /** 淡出启动层（幂等） */
