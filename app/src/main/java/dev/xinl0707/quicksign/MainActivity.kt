@@ -139,6 +139,7 @@ class MainActivity : Activity() {
     private val INFO_LIST_BG: Int get() = palette.infoListBg
 
     private lateinit var webView: WebView
+    private var webViewStarted = false   // WebView 是否已开始加载（首次引导流程完成保存后才加载）
     private lateinit var credStore: CredentialStore
     private lateinit var statusText: TextView
 
@@ -342,7 +343,14 @@ class MainActivity : Activity() {
             // 打开 App 默认显示原生签到面板（网页隐藏后台加载/登录），可立即输入
             showSignPanel()
             trace("after showSignPanel")
-            webView.loadUrl(SignInjector.HOME_URL)
+            // 首次引导（未同意免责声明）：暂不加载 WebView——等引导进设置页、用户保存后由 onResume 加载，
+            // 避免后台加载与免责声明/权限流程互相干扰造成登录时机错乱
+            if (!credStore.disclaimerAccepted()) {
+                trace("loadUrl deferred: waiting for first-run guide + settings save")
+            } else {
+                webViewStarted = true
+                webView.loadUrl(SignInjector.HOME_URL)
+            }
             trace("after loadUrl")
             if (!credStore.hasCredentials()) {
                 statusText.text = "请在右上角「设置」中保存学号密码，将自动登录"
@@ -392,6 +400,12 @@ class MainActivity : Activity() {
         if (signPanelShown) maybeAutoListen()
         // 底部状态栏可见性按设置开关刷新（设置页切换后返回生效）
         statusWrap?.visibility = if (credStore.hideStatusBar()) View.GONE else View.VISIBLE
+        // 首次引导完成后（引导进设置页 → 用户保存/返回主界面）：开始加载 WebView，
+        // 至此免责声明与权限流程已结束，避免后台加载的时机问题
+        if (!webViewStarted && credStore.disclaimerAccepted()) {
+            webViewStarted = true
+            webView.loadUrl(SignInjector.HOME_URL)
+        }
         // 从设置页返回：重新读取课表缓存（设置页导入新课表后立即生效，无需重启 App）
         refreshScheduleFromStore()
     }
