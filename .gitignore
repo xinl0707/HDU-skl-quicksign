@@ -19,9 +19,10 @@ captures/
 *.p12
 key.properties
 
-# 交付 APK（另有备份目录，不入库）
+# 交付 APK（另有备份目录，不入库；apk/ 历史版本归档目录例外）
 *.apk
 !app/build/outputs/apk/**/*.apk
+!apk/**
 
 # 日志与临时文件
 *.log
