@@ -1802,7 +1802,6 @@ class MainActivity : Activity() {
                     // 最近 30 分钟内登录成功过：页面经过登录页只是 CAS 校验链（cookie 有效，1-2 秒回跳），
                     // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，重新填表并提示手动点击
                     if (System.currentTimeMillis() - lastLoginPageSeenAt > 15000) {
-                        showWebOnly()
                         statusText.text = "登录页：已填账号密码，请手动点击登录"
                         tryAutoLogin(submit = false)
                         toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
@@ -1829,9 +1828,8 @@ class MainActivity : Activity() {
                         statusText.text = "登录页：已自动提交，等待页面处理…"
                     }
                 } else {
-                    // 自动填账号密码后直接显示网页登录页（避免保持键盘但实际在登录页造成的闪烁），
-                    // toast 提示手动点登录；登录成功回跳后由 loginFlowPending 自动切回键盘面板
-                    showWebOnly()
+                    // 后台自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
+                    // toast 提示用户手动点击登录按钮；点登录后回跳签到页，由 loginFlowPending 自动切回面板
                     statusText.text = "登录页：已填账号密码，请手动点击登录"
                     tryAutoLogin(submit = false)
                     toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
