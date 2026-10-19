@@ -61,6 +61,58 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_PERMS = 1001
         private const val POLL_INTERVAL = 700L
+        // 免责声明正文（首次启动引导展示；版本号动态跟随当前版本）
+        // 占位符 __VER__ 会被当前版本号替换
+        private const val DISCLAIMER_TEXT_TEMPLATE = """
+上课啦快捷签到 App 免责声明
+
+生效日期：2026 年 10 月 19 日
+适用版本：v1.0 至 v__VER__ 全部历史版本及后续版本
+
+一、非官方声明
+本 App（上课啦快捷签到）是由个人开发者独立开发的安卓辅助工具，与杭州电子科技大学及其「上课啦」签到系统（skl.hdu.edu.cn）、数字杭电统一认证系统无任何官方关联，未获得学校任何形式的授权、认可、赞助或合作。学校官方系统的规则、政策、公告等均以学校正式发布为准。
+
+二、使用目的与合规
+1. 本 App 仅供使用者本人用于正常的到课签到，辅助使用者本人完成签到操作，不构成对学校签到制度的替代或规避。
+2. 严禁使用本 App 进行代签、替他人签到、伪造签到记录，或从事任何违反学校规章制度的行为。使用者须确保本人在场，并自行遵守学校关于到课、签到、课堂管理的全部规定。
+3. 因违反学校规定使用本 App 而产生的一切后果（包括但不限于考勤作废、通报处理、账号受限等），由使用者自行承担，开发者不承担任何责任。
+
+三、自动化操作风险
+1. 本 App 包含自动登录、自动识别并输入签到码、自动重登等自动化功能，这些功能基于对学校公开网页的自动化操作实现。
+2. 学校系统可能随时改版或调整安全策略（如人机验证、滑块验证、验证码、风控检测等），可能导致本 App 功能失效、部分失效，或触发学校系统的异常判定与限制措施。由此产生的任何后果，由使用者自行承担。
+3. 本 App 不绕过学校的人机验证、滑块、验证码等防刷设计，相关验证需由使用者手动完成。
+
+四、签到结果
+1. 本 App 不保证签到一定成功。签到是否成功，一律以学校「上课啦」系统的最终记录为准。
+2. 因网络、设备、定位、系统语音服务、学校系统状态或人为操作等原因导致的签到失败、迟到、缺勤、漏签等后果，开发者不承担责任。
+3. 建议使用者提前开启本 App 并确认登录状态，签到后及时查看页面确认结果，必要时按学校规定手动补签。
+
+五、账号与数据安全
+1. 使用者须自行妥善保管学号、密码等账号信息。本 App 使用设备安全芯片（Keystore）对密码进行加密存储，不会以明文形式落盘，亦不向开发者或任何第三方上传账号密码。
+2. 开发者不对因设备丢失、设备被 root/越狱、恶意软件入侵、使用者主动泄露或在不安全设备上登录等情形造成的账号信息泄露承担责任。
+3. 建议使用者不要在他人设备上登录本 App，并定期修改密码。
+
+六、第三方服务
+1. 本 App 可选接小米 MiMo 云端语音识别服务（mimo.mi.com）。启用该功能时，相关语音数据会发送至该第三方服务处理，请在使用前自行阅读该服务的用户协议与隐私政策，并自行评估风险与费用（该服务按量计费）。
+2. 开发者不对任何第三方服务（包括但不限于小米 MiMo、系统语音识别引擎）的可用性、准确性、数据安全及收费行为承担责任。
+
+七、权限说明
+本 App 会申请麦克风权限（用于语音识别签到码）与定位权限（签到功能需要）。上述权限仅用于实现本 App 的核心功能，不用于其他用途。
+
+八、软件质量与维护
+1. 本 App 按「现状」提供，开发者不对其可用性、稳定性、准确性、兼容性作任何明示或暗示的保证。
+2. 开发者会尽力修复问题，但没有义务提供持续更新、维护或技术支持，并有权在任何时间停止更新或下架本 App。
+3. 学校前端改版可能导致自动登录、自动输入等功能失效，使用者可通过「账号设置」中的「调试日志」功能反馈问题，但不保证问题一定得到解决。
+
+九、知识产权
+1. 本 App 的源代码、界面设计、文档等知识产权归开发者所有，未经开发者书面许可，任何个人或组织不得复制、修改、分发、反编译或用于商业用途。
+2. 本 App 中涉及的学校名称、系统名称、第三方品牌及商标，均归其各自权利人所有，本声明不构成任何授权。
+
+十、法律适用
+本声明适用中华人民共和国法律。使用者安装、使用本 App，即视为已阅读、理解并同意本免责声明的全部内容。如本声明部分条款被认定无效或不可执行，不影响其余条款的效力。
+
+请在使用本 App 前仔细阅读本免责声明。若不同意其中任何条款，请立即停止下载、安装和使用。
+"""
     }
 
     // 深色模式跟随系统；配色按「界面风格 × 深浅」从 ThemePalette 取（延迟初始化，属性初始化时机早于系统资源绑定）
@@ -104,10 +156,10 @@ class MainActivity : Activity() {
     private lateinit var courseText: TextView
     private lateinit var courseDetailText: TextView
     private lateinit var clockText: TextView
-    private lateinit var locationText: TextView   // 定位正常时显示当前经纬度
     private var lastLocReqAt = 0L                 // 原生定位请求节流
     // 面板标题：加载中显示"加载中…"，就绪后显示"签到就绪"
     private lateinit var panelTitleText: TextView
+    private var statusWrap: LinearLayout? = null   // 底部状态栏容器（设置可隐藏）
     private var scheduleCourses: List<ScheduleParser.Course> = emptyList()
     private var scheduleFetchedAt = 0L
     private var lastScheduleTickAt = 0L
@@ -128,6 +180,13 @@ class MainActivity : Activity() {
     private var lastSubmitAt = 0L           // 最近一次提交签到码时间（结果判定窗口）
     private var resultWatchActive = false   // 输码后结果监听进行中
     private var resultWatchStartAt = 0L     // 结果监听启动时间（3 秒超时判定签到码无效）
+    private var resultWaiting = false       // 输码后结果判定中：键盘位显示大大大转圈过渡，键盘/横线隐藏
+    // 首次启动引导（免责声明 + 权限 + 进设置），同意一次后不再弹出
+    private var guideOverlay: FrameLayout? = null
+    private var disclaimerCard: LinearLayout? = null
+    private var permCard: LinearLayout? = null
+    private var guideNextBtn: Button? = null
+    private var guidePermHint: TextView? = null
     // 签到码无效弹窗：3 秒未跳 detail 弹出（非 toast），后台继续检测 3 秒缓冲，缓冲内成功则切签到成功
     private var invalidOverlay: FrameLayout? = null
     private var invalidShown = false
@@ -267,6 +326,10 @@ class MainActivity : Activity() {
             trace("before buildUi")
             buildUi()
             trace("after buildUi")
+            // 首次启动：免责声明 + 权限引导（只弹一次；已同意过直接跳过）
+            if (!credStore.disclaimerAccepted()) {
+                showGuideOverlay()
+            }
             setupWebView()
             trace("after setupWebView")
             requestNeededPermissions()
@@ -321,6 +384,8 @@ class MainActivity : Activity() {
         }
         // 回到首页键盘面板时才恢复自动监听（其余界面不监听）
         if (signPanelShown) maybeAutoListen()
+        // 底部状态栏可见性按设置开关刷新（设置页切换后返回生效）
+        statusWrap?.visibility = if (credStore.hideStatusBar()) View.GONE else View.VISIBLE
     }
 
     override fun onPause() {
@@ -448,18 +513,6 @@ class MainActivity : Activity() {
             setPadding(dp(0), dp(0), dp(0), dp(2))
         }
         signPanel.addView(clockText, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-
-        // 当前经纬度（定位正常时显示，默认隐藏）
-        locationText = TextView(this).apply {
-            textSize = 12f
-            setTextColor(SUB)
-            gravity = Gravity.CENTER
-            setPadding(dp(0), dp(0), dp(0), dp(4))
-            visibility = View.GONE
-        }
-        signPanel.addView(locationText, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
@@ -596,7 +649,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(0), dp(10), dp(4))
             addView(statusBar)
+            // 隐藏首页底部状态显示（设置里可开关，默认隐藏）
+            visibility = if (credStore.hideStatusBar()) View.GONE else View.VISIBLE
         }
+        this.statusWrap = statusWrap
         root.addView(statusWrap)
         trace("buildUi statusBar ok")
 
@@ -861,6 +917,186 @@ class MainActivity : Activity() {
             }
         })
         trace("buildUi done")
+    }
+
+    // ------------------------------------------------------------------ 首次启动引导（免责声明 + 权限 + 进设置）
+
+    /** 当前 App 版本名（免责声明与同意记录用） */
+    private fun appVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) { "?" }
+
+    /** 当前 App 版本号（同意记录用） */
+    private fun appVersionCode(): Int = try {
+        packageManager.getPackageInfo(packageName, 0).versionCode
+    } catch (e: Exception) { 0 }
+
+    /** 震动反馈（短促，关键交互确认：同意/权限/进入设置/签到成功/无效） */
+    private fun vibrate(ms: Long = 60) {
+        try {
+            val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            if (v.hasVibrator()) v.vibrate(ms)
+        } catch (e: Exception) {}
+    }
+
+    /** 首次启动引导：免责声明（滚动到底才能同意，不同意自动退出）→ 权限（声明 + 授予按钮，拒绝可重试）→ 进入设置 */
+    private fun showGuideOverlay() {
+        val ov = FrameLayout(this)
+        ov.setBackgroundColor(0xF0000000.toInt())   // 全屏遮罩
+        guideOverlay = ov
+
+        // ---------- 第一步：免责声明卡片 ----------
+        val dCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(22), dp(20), dp(22), dp(18))
+        }
+        disclaimerCard = dCard
+        dCard.addView(TextView(this).apply {
+            text = "免责声明"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(TEXT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val dScroll = ScrollView(this)
+        dScroll.addView(TextView(this).apply {
+            text = DISCLAIMER_TEXT_TEMPLATE.replace("__VER__", appVersion())
+            textSize = 13f
+            setTextColor(TEXT)
+            setLineSpacing(dp(2).toFloat(), 1.15f)
+            setTextIsSelectable(true)
+        }, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        dCard.addView(dScroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(430)
+        ))
+        val dBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val disagreeBtn = button("不同意", LIGHT, 0xFFFA5151.toInt(), big = true)
+        disagreeBtn.setOnClickListener {
+            vibrate(40)
+            finish()   // 不同意：自动退出
+        }
+        val agreeBtn = button("同意", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        agreeBtn.isEnabled = false   // 滚动到底才可点
+        agreeBtn.setOnClickListener {
+            vibrate(60)
+            // 保存同意记录（时间/版本/设备信息）到本地，只弹一次
+            val record = "同意时间:" +
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()) +
+                    " | 版本:v" + appVersion() + "(" + appVersionCode() + ")" +
+                    " | 设备:" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL +
+                    " | 系统:Android " + android.os.Build.VERSION.RELEASE
+            credStore.setDisclaimerAccepted(record)
+            showGuidePermStep()
+        }
+        dBtnRow.addView(disagreeBtn, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { rightMargin = dp(8) })
+        dBtnRow.addView(agreeBtn, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { leftMargin = dp(8) })
+        dCard.addView(dBtnRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(16) })
+        // 滚动到底才启用"同意"
+        dScroll.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+            val max = (dScroll.getChildAt(0)?.height ?: 0) - dScroll.height
+            agreeBtn.isEnabled = scrollY >= max - 20
+        }
+        ov.addView(dCard, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ).apply { leftMargin = dp(18); rightMargin = dp(18) })
+
+        // ---------- 第二步：权限卡片（同意后切换） ----------
+        val pCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(22), dp(20), dp(22), dp(18))
+            visibility = View.GONE
+        }
+        permCard = pCard
+        pCard.addView(TextView(this).apply {
+            text = "权限说明"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(TEXT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        pCard.addView(TextView(this).apply {
+            text = "本 App 需要以下权限才能正常签到：\n\n· 麦克风：语音识别签到码自动输入\n· 定位：签到功能需要精准定位\n\n权限仅用于核心功能，不会用于其他用途。"
+            textSize = 13f
+            setTextColor(TEXT)
+            setLineSpacing(dp(2).toFloat(), 1.2f)
+            setPadding(dp(0), dp(14), dp(0), dp(14))
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val grantBtn = button("授予权限", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        grantBtn.setOnClickListener {
+            vibrate(40)
+            // 弹系统授权弹窗；被拒绝/失败可再次点击重新激活
+            val need = mutableListOf<String>()
+            if (!hasRecordPermission()) need.add(Manifest.permission.RECORD_AUDIO)
+            if (!hasLocationPermission()) {
+                need.add(Manifest.permission.ACCESS_FINE_LOCATION)
+                need.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), REQ_PERMS)
+        }
+        pCard.addView(grantBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        guidePermHint = TextView(this).apply {
+            text = "权限未授予，请点击上方按钮激活系统弹窗"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(SUB)
+            setPadding(dp(0), dp(10), dp(0), dp(2))
+        }
+        pCard.addView(guidePermHint, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        guideNextBtn = button("下一步", LIGHT, TEXT, big = true)
+        guideNextBtn!!.isEnabled = false
+        guideNextBtn!!.setOnClickListener {
+            vibrate(80)
+            ov.visibility = View.GONE   // 关闭引导层
+            startActivity(Intent(this, SettingsActivity::class.java))   // 第三步：直接进入设置界面
+        }
+        pCard.addView(guideNextBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(14) })
+        ov.addView(pCard, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ).apply { leftMargin = dp(18); rightMargin = dp(18) })
+
+        rootFrame.addView(ov, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        updateGuidePermState()
+    }
+
+    /** 切换到权限引导步 */
+    private fun showGuidePermStep() {
+        disclaimerCard?.visibility = View.GONE
+        permCard?.visibility = View.VISIBLE
+        updateGuidePermState()
+    }
+
+    /** 权限状态刷新：全授予后启用"下一步" */
+    private fun updateGuidePermState() {
+        if (guideOverlay == null || guideOverlay?.visibility != View.VISIBLE) return
+        val ok = hasRecordPermission() && hasLocationPermission()
+        guideNextBtn?.isEnabled = ok
+        guidePermHint?.text = if (ok) "权限已全部授予，可进入设置" else "权限未授予，请点击上方按钮激活系统弹窗"
     }
 
     // ------------------------------------------------------------------ 内嵌启动层（开屏）
@@ -1319,7 +1555,7 @@ class MainActivity : Activity() {
         if (cur != null) {
             val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
             val time = "${fmt.format(java.util.Date(cur.start))}-${fmt.format(java.util.Date(cur.end))}"
-            courseText.text = "当前课程：${cur.name}"
+            courseText.text = "${cur.name}"   // 前缀"当前课程："已按用户要求删除，只显示课程名
             courseDetailText.text = listOfNotNull(
                 time,
                 cur.location.ifBlank { null },
@@ -1515,6 +1751,12 @@ class MainActivity : Activity() {
                 lastLoginPageSeenAt = 0L // 离开登录页：重置登录页停留计时
                 wasOnLoginPage = false   // 已回到签到页：登录流程结束
                 dismissSplash() // 页面就绪：启动层提前淡出（无需等满 1.6 秒）
+                if (resultWaiting) {
+                    // 输码后结果判定中：键盘位保持大大大转圈过渡，键盘与四位横线隐藏
+                    loadingBar?.visibility = View.VISIBLE
+                    panelKeyGrid?.visibility = View.GONE
+                    panelCodeDisplay.visibility = View.GONE
+                } else {
                 // 签到界面加载完成：隐藏加载动画，显示四位横线与键盘（加载完成前隐藏，显示"加载中"）
                 panelTitleText.text = "签到就绪"
                 panelTitleText.setTextColor(TEXT)
@@ -1562,6 +1804,7 @@ class MainActivity : Activity() {
                     updateLocation()
                 }
                 maybeAutoListen()
+                }
                 maybeProbeLogin()
             }
             else -> {
@@ -1812,8 +2055,9 @@ class MainActivity : Activity() {
                     filling = false
                     statusText.text = "已输入签到码，等待签到结果…"
                     addSpeechInfo("输入", "自动输入 $lastFilledCode 完成，等待签到结果")
-                    // 网页已确认输入完成：收起大数字浮层（彩带停止），停留键盘面板等后台结果判定
+                    // 网页已确认输入完成：收起大数字浮层（彩带停止），键盘位显示大转圈过渡等结果判定
                     dismissBigCodeOverlay()
+                    showResultWaiting()
                     // Debug：提交后连续多次抓取结果页面（跳转/异步渲染慢，多采样 5 次 × 2 秒，持续约 10 秒），
                     // 保证能抓到「签到成功页」或「签到码不存在」的真实文案
                     for (i in 1..5) {
@@ -1842,6 +2086,8 @@ class MainActivity : Activity() {
         invalidShown = false                       // 若无效弹窗显示中（缓冲期内成功）→ 先关掉
         invalidOverlay?.visibility = View.GONE
         resultWatchActive = false
+        hideResultWaiting()                        // 收掉结果等待转圈
+        vibrate(90)                                // 签到成功震动反馈
         // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 3 次）
         fun extract(attempt: Int) {
             evalJs("(function(){try{return document.body.innerText||''}catch(e){return ''}})()") { text ->
@@ -1858,6 +2104,21 @@ class MainActivity : Activity() {
             }
         }
         extract(0)
+    }
+
+    /** 输码后结果判定中：键盘位显示大大大转圈过渡，键盘与四位横线隐藏 */
+    private fun showResultWaiting() {
+        resultWaiting = true
+        loadingBar?.visibility = View.VISIBLE
+        panelKeyGrid?.visibility = View.GONE
+        panelCodeDisplay.visibility = View.GONE
+        statusText.text = "已输入签到码，等待签到结果…"
+    }
+
+    /** 结果判定结束：收起转圈（键盘恢复由签到页状态机处理） */
+    private fun hideResultWaiting() {
+        resultWaiting = false
+        loadingBar?.visibility = View.GONE
     }
 
     /** 解析 detail 页正文：课程名 + 学勤预警 + 考勤四格（真实结构：签到完成/课程名/考勤统计/学勤预警/旷课学时x/课程总学时y/比例%/正常n/请假n/迟到n/旷课n） */
@@ -1886,6 +2147,8 @@ class MainActivity : Activity() {
     /** 签到码无效：3 秒未跳 detail → 弹「签到码无效（或网络超时）」弹窗（非 toast），后台继续缓冲检测 */
     private fun showInvalidOverlay() {
         appendLog("sign invalid: 3s no detail redirect, show invalid overlay")
+        hideResultWaiting()                        // 收掉结果等待转圈
+        vibrate(60)                                // 失败震动反馈
         statusText.text = "签到码无效，请重试"
         val ov = invalidOverlay ?: return
         ov.alpha = 0f
@@ -2245,46 +2508,9 @@ class MainActivity : Activity() {
     private fun hasRecordPermission(): Boolean =
         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    /** 原生定位：拿一次经纬度显示在面板（定位正常时）。无权限→隐藏；失败→"定位中…"由转圈兜底 */
+    /** 原生定位（签到页面定位校验用；经纬度显示已按用户要求移除，定位逻辑保留） */
     private fun updateLocation() {
-        if (!hasLocationPermission()) {
-            locationText.text = ""
-            locationText.visibility = View.GONE
-            return
-        }
-        // 节流：20 秒内不重复请求（轮询每 2 秒一次）
-        val now = System.currentTimeMillis()
-        if (now - lastLocReqAt < 20000) return
-        lastLocReqAt = now
-        try {
-            val lm = getSystemService(LOCATION_SERVICE) as LocationManager
-            val listener = object : LocationListener {
-                override fun onLocationChanged(loc: Location) {
-                    locationText.text = String.format(
-                        java.util.Locale.CHINA, "经纬度：%.2f, %.2f", loc.latitude, loc.longitude
-                    )
-                    locationText.visibility = View.VISIBLE
-                    try { lm.removeUpdates(this) } catch (e: Exception) {}
-                }
-
-                @Deprecated("Deprecated in Java")
-                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
-
-                override fun onProviderEnabled(provider: String) {}
-
-                override fun onProviderDisabled(provider: String) {}
-            }
-            lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper())
-            lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper())
-            // 10 秒超时清理：没拿到先显示"定位中…"（键盘位转圈继续兜底）
-            handler.postDelayed({
-                try { lm.removeUpdates(listener) } catch (e: Exception) {}
-                if (locationText.text.isEmpty()) locationText.text = "定位中"
-            }, 10000)
-        } catch (e: Exception) {
-            locationText.text = ""
-            locationText.visibility = View.GONE
-        }
+        // 经纬度显示已删除：定位状态由 loc 标志 + 键盘位定位转圈兜底，不再展示坐标文字
     }
 
     private fun requestNeededPermissions() {
@@ -2319,6 +2545,8 @@ class MainActivity : Activity() {
         if (!hasRecordPermission()) {
             toastOnce("no-record", "未授予麦克风权限，语音签到不可用，可选手动输入")
         }
+        // 首次引导权限步：全部授予后启用"下一步"
+        updateGuidePermState()
     }
 
     // ------------------------------------------------------------------ 识别信息展示

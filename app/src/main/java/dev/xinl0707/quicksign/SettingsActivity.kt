@@ -267,7 +267,10 @@ class SettingsActivity : Activity() {
             gravity = Gravity.CENTER
         }
         titleRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        titleRow.addView(View(this), LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))   // 右侧对称占位
+        // 右上角保存按钮（原"操作"块里的保存设置移到这里，操作块只留登录/清除）
+        val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 10)
+        saveTop.setOnClickListener { save() }
+        titleRow.addView(saveTop, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
@@ -487,17 +490,27 @@ class SettingsActivity : Activity() {
         styleBlock.addView(styleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
+        // 隐藏首页底部状态显示：默认打开（界面更简洁），关掉后主界面底部恢复状态文字
+        val hideStatusCheck = CheckBox(this).apply {
+            text = "隐藏首页底部状态显示"
+            textSize = 13f
+            setTextColor(SUB)
+            isChecked = credStore.hideStatusBar()
+            setOnCheckedChangeListener { _, checked ->
+                credStore.setHideStatusBar(checked)
+                toast("已保存")
+            }
+        }
+        styleBlock.addView(hideStatusCheck, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
         root.addView(styleBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
 
         // ========== 操作块 ==========
         val actionBlock = block("操作")
-        val saveBtn = button("保存设置", ACCENT, 0xFFFFFFFF.toInt(), big = true)
-        saveBtn.setOnClickListener { save() }
-        actionBlock.addView(saveBtn, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(2) })
+        // 保存已移到右上角，这里只保留"保存并登录"与"清除账号"
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val loginBtn = button("保存并登录", LIGHT, ACCENT)
         loginBtn.setOnClickListener {

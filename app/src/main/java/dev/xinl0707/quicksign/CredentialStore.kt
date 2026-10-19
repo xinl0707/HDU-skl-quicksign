@@ -148,4 +148,27 @@ class CredentialStore(context: Context) {
     fun setScheduleCacheIcs(ics: String) {
         prefs.edit().putString("schedule_cache", ics).apply()
     }
+
+    // ------------------------------------------------------------------ 首次引导（免责声明）
+
+    /** 是否已同意免责声明（首次启动引导，同意一次后不再弹出） */
+    fun disclaimerAccepted(): Boolean = prefs.getBoolean("disclaimer_accepted", false)
+
+    /** 记录同意信息（时间/版本/设备）到本地 */
+    fun setDisclaimerAccepted(record: String) {
+        prefs.edit().putBoolean("disclaimer_accepted", true)
+            .putString("disclaimer_record", record).apply()
+    }
+
+    /** 读取免责声明同意记录（含时间/版本/设备信息） */
+    fun disclaimerRecord(): String = prefs.getString("disclaimer_record", "") ?: ""
+
+    // ------------------------------------------------------------------ 首页底部状态显示（默认隐藏）
+
+    /** 隐藏首页底部状态栏：默认开（true=隐藏，false=显示） */
+    fun hideStatusBar(): Boolean = prefs.getBoolean("hide_status_bar", true)
+
+    fun setHideStatusBar(hide: Boolean) {
+        prefs.edit().putBoolean("hide_status_bar", hide).apply()
+    }
 }
