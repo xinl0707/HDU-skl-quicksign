@@ -163,10 +163,10 @@ class CredentialStore(context: Context) {
     /** 读取免责声明同意记录（含时间/版本/设备信息） */
     fun disclaimerRecord(): String = prefs.getString("disclaimer_record", "") ?: ""
 
-    // ------------------------------------------------------------------ 首页底部状态显示（默认隐藏）
+    // ------------------------------------------------------------------ 首页底部状态显示（默认显示）
 
-    /** 隐藏首页底部状态栏：默认开（true=隐藏，false=显示） */
-    fun hideStatusBar(): Boolean = prefs.getBoolean("hide_status_bar", true)
+    /** 隐藏首页底部状态栏：默认关（false=显示，true=隐藏） */
+    fun hideStatusBar(): Boolean = prefs.getBoolean("hide_status_bar", false)
 
     fun setHideStatusBar(hide: Boolean) {
         prefs.edit().putBoolean("hide_status_bar", hide).apply()

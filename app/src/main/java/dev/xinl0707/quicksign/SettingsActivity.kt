@@ -490,7 +490,7 @@ class SettingsActivity : Activity() {
         styleBlock.addView(styleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
-        // 隐藏首页底部状态显示：默认打开（界面更简洁），关掉后主界面底部恢复状态文字
+        // 隐藏首页底部状态显示：默认关（默认显示状态栏），开启后主界面底部状态文字隐藏
         val hideStatusCheck = CheckBox(this).apply {
             text = "隐藏首页底部状态显示"
             textSize = 13f

@@ -179,7 +179,7 @@ class MainActivity : Activity() {
     private var signResultShown = false     // 覆盖页显示中
     private var lastSubmitAt = 0L           // 最近一次提交签到码时间（结果判定窗口）
     private var resultWatchActive = false   // 输码后结果监听进行中
-    private var resultWatchStartAt = 0L     // 结果监听启动时间（3 秒超时判定签到码无效）
+    private var resultWatchStartAt = 0L     // 结果监听启动时间（5 秒超时判定签到码无效）
     private var resultWaiting = false       // 输码后结果判定中：键盘位显示大大大转圈过渡，键盘/横线隐藏
     // 首次启动引导（免责声明 + 权限 + 进设置），同意一次后不再弹出
     private var guideOverlay: FrameLayout? = null
@@ -591,7 +591,10 @@ class MainActivity : Activity() {
             )
             // 数字键字号加大，退格/清除适中
             b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, if (isDigit) 24f else 18f)
-            b.setOnClickListener { onPanelKey(d) }
+            b.setOnClickListener {
+                vibrate(25)   // 输入数字时清脆短震
+                onPanelKey(d)
+            }
             val lp = GridLayout.LayoutParams()
             lp.width = 0
             lp.height = dp(58)
@@ -649,7 +652,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(0), dp(10), dp(4))
             addView(statusBar)
-            // 隐藏首页底部状态显示（设置里可开关，默认隐藏）
+            // 隐藏首页底部状态显示（设置里可开关，默认不隐藏）
             visibility = if (credStore.hideStatusBar()) View.GONE else View.VISIBLE
         }
         this.statusWrap = statusWrap
@@ -931,11 +934,35 @@ class MainActivity : Activity() {
         packageManager.getPackageInfo(packageName, 0).versionCode
     } catch (e: Exception) { 0 }
 
-    /** 震动反馈（短促，关键交互确认：同意/权限/进入设置/签到成功/无效） */
-    private fun vibrate(ms: Long = 60) {
+    /** 震动反馈（清脆短震，仅用于：输入数字、签到成功） */
+    private fun vibrate(ms: Long = 40) {
         try {
             val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
-            if (v.hasVibrator()) v.vibrate(ms)
+            if (v.hasVibrator()) {
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    v.vibrate(android.os.VibrationEffect.createOneShot(
+                        ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE
+                    ))
+                } else {
+                    @Suppress("DEPRECATION")
+                    v.vibrate(ms)
+                }
+            }
+        } catch (e: Exception) {}
+    }
+
+    /** 快速震动两下（提示错误：签到码无效） */
+    private fun vibrateDouble() {
+        try {
+            val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            if (v.hasVibrator()) {
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 45, 35, 45), -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    v.vibrate(longArrayOf(0, 45, 35, 45), -1)
+                }
+            }
         } catch (e: Exception) {}
     }
 
@@ -977,14 +1004,17 @@ class MainActivity : Activity() {
         val dBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val disagreeBtn = button("不同意", LIGHT, 0xFFFA5151.toInt(), big = true)
         disagreeBtn.setOnClickListener {
-            vibrate(40)
             finish()   // 不同意：自动退出
         }
-        val agreeBtn = button("同意", ACCENT, 0xFFFFFFFF.toInt(), big = true)
-        agreeBtn.isEnabled = false   // 滚动到底才可点
+        val agreeBtn = button("同意", LIGHT, SUB, big = true)   // 初始灰色；滑到底才变高亮
         agreeBtn.setOnClickListener {
-            vibrate(60)
-            // 保存同意记录（时间/版本/设备信息）到本地，只弹一次
+            // 未滑动到底：灰色点击 → 提示滑动到底阅读全文
+            val maxReach = (dScroll.getChildAt(0)?.height ?: 0) - dScroll.height
+            if (dScroll.scrollY < maxReach - 20) {
+                toast("请滑动到底阅读全文")
+                return@setOnClickListener
+            }
+            // 已滑动到底：保存同意记录（时间/版本/设备信息）到本地，只弹一次
             val record = "同意时间:" +
                     java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()) +
                     " | 版本:v" + appVersion() + "(" + appVersionCode() + ")" +
@@ -1002,10 +1032,12 @@ class MainActivity : Activity() {
         dCard.addView(dBtnRow, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(16) })
-        // 滚动到底才启用"同意"
+        // 滚动到底：同意按钮变高亮（未到底保持灰色，点击时提示滑动到底）
         dScroll.setOnScrollChangeListener { _, _, scrollY, _, _ ->
             val max = (dScroll.getChildAt(0)?.height ?: 0) - dScroll.height
-            agreeBtn.isEnabled = scrollY >= max - 20
+            val reached = scrollY >= max - 20
+            agreeBtn.background = roundedBg(if (reached) ACCENT else LIGHT, 12)
+            agreeBtn.setTextColor(if (reached) 0xFFFFFFFF.toInt() else SUB)
         }
         ov.addView(dCard, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1040,7 +1072,6 @@ class MainActivity : Activity() {
         ))
         val grantBtn = button("授予权限", ACCENT, 0xFFFFFFFF.toInt(), big = true)
         grantBtn.setOnClickListener {
-            vibrate(40)
             // 弹系统授权弹窗；被拒绝/失败可再次点击重新激活
             val need = mutableListOf<String>()
             if (!hasRecordPermission()) need.add(Manifest.permission.RECORD_AUDIO)
@@ -1066,7 +1097,6 @@ class MainActivity : Activity() {
         guideNextBtn = button("下一步", LIGHT, TEXT, big = true)
         guideNextBtn!!.isEnabled = false
         guideNextBtn!!.setOnClickListener {
-            vibrate(80)
             ov.visibility = View.GONE   // 关闭引导层
             startActivity(Intent(this, SettingsActivity::class.java))   // 第三步：直接进入设置界面
         }
@@ -1645,13 +1675,13 @@ class MainActivity : Activity() {
         }
         // 输码后结果监听（不进网页也能知道签到结果）：
         // URL 跳 #/sign/in/detail = 签到成功 → 提取考勤数据弹覆盖页（带彩带）；
-        // 3 秒未跳 → 弹「签到码无效（或网络超时）」弹窗（非 toast），后台继续检测 3 秒缓冲，
+        // 5 秒未跳 → 弹「签到码无效（或网络超时）」弹窗（非 toast），后台继续检测 3 秒缓冲，
         // 缓冲期内成功则关掉无效弹窗切到签到成功；缓冲结束仍无跳转则维持弹窗等用户「重新输入」
         if (resultWatchActive && !signResultShown) {
             if (curUrl.contains("#/sign/in/detail")) {
                 resultWatchActive = false
                 onSignSucceeded()
-            } else if (!invalidShown && System.currentTimeMillis() - resultWatchStartAt > 3000) {
+            } else if (!invalidShown && System.currentTimeMillis() - resultWatchStartAt > 5000) {
                 invalidShown = true
                 invalidShownAt = System.currentTimeMillis()
                 showInvalidOverlay()
@@ -2087,7 +2117,7 @@ class MainActivity : Activity() {
         invalidOverlay?.visibility = View.GONE
         resultWatchActive = false
         hideResultWaiting()                        // 收掉结果等待转圈
-        vibrate(90)                                // 签到成功震动反馈
+        vibrate(60)                                // 签到成功震动反馈（清脆单震）
         // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 3 次）
         fun extract(attempt: Int) {
             evalJs("(function(){try{return document.body.innerText||''}catch(e){return ''}})()") { text ->
@@ -2148,7 +2178,7 @@ class MainActivity : Activity() {
     private fun showInvalidOverlay() {
         appendLog("sign invalid: 3s no detail redirect, show invalid overlay")
         hideResultWaiting()                        // 收掉结果等待转圈
-        vibrate(60)                                // 失败震动反馈
+        vibrateDouble()                            // 失败：快速震动两下
         statusText.text = "签到码无效，请重试"
         val ov = invalidOverlay ?: return
         ov.alpha = 0f
