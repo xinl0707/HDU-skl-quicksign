@@ -2082,17 +2082,23 @@ class MainActivity : Activity() {
                             statusText.text = "登录状态异常，请点「查看网页」手动完成登录"
                             showWebOnly()
                         } else {
-                            // 不立即跳 SSO：cookie 有效时页面会自行完成 CAS 校验回跳（1-2 秒）；
-                            // 等 8 秒页面仍未渲染签到页（真未登录/校验失败）才主动导航登录页
-                            statusText.text = "正在验证登录…"
-                            val probeAt = System.currentTimeMillis()
-                            handler.postDelayed({
-                                if (!signReady && !loginOk &&
-                                        System.currentTimeMillis() - probeAt >= 7000) {
-                                    applyUAFor(loginUrl)
-                                    webView.loadUrl(loginUrl)
-                                }
-                            }, 8000)
+                            // probe 401：不主动跳 CAS——如果 WebView 已在签到页(skl域)，
+                            // 签到页自身 JS 检测未登录会自动重定向 SSO，主动 loadUrl 会与页面自跳转冲突造成乱跳；
+                            // 仅当 WebView 不在 skl 域(空白页/错误页)时，等 8 秒仍未就绪才主动导航登录页
+                            val curHost = webView.url?.let { Uri.parse(it).host } ?: ""
+                            if (curHost.endsWith("skl.hdu.edu.cn")) {
+                                statusText.text = "正在验证登录…"
+                            } else {
+                                statusText.text = "正在验证登录…"
+                                val probeAt = System.currentTimeMillis()
+                                handler.postDelayed({
+                                    if (!signReady && !loginOk &&
+                                            System.currentTimeMillis() - probeAt >= 7000) {
+                                        applyUAFor(loginUrl)
+                                        webView.loadUrl(loginUrl)
+                                    }
+                                }, 8000)
+                            }
                         }
                     }
                     else -> {
