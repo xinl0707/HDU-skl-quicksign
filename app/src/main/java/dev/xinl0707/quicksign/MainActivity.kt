@@ -188,6 +188,7 @@ class MainActivity : Activity() {
     private var guideNextBtn: Button? = null
     private var guidePermHint: TextView? = null
     private var pendingRecordToast = false   // 引导期间拒绝麦克风：等引导结束后再补弹提示
+    private var restartedAfterLogin = false  // 认证成功后已 recreate 一次（避免路由错乱反复重启）
     // 签到码无效弹窗：3 秒未跳 detail 弹出（非 toast），后台继续检测 3 秒缓冲，缓冲内成功则切签到成功
     private var invalidOverlay: FrameLayout? = null
     private var invalidShown = false
@@ -390,6 +391,19 @@ class MainActivity : Activity() {
         if (signPanelShown) maybeAutoListen()
         // 底部状态栏可见性按设置开关刷新（设置页切换后返回生效）
         statusWrap?.visibility = if (credStore.hideStatusBar()) View.GONE else View.VISIBLE
+        // 从设置页返回：重新读取课表缓存（设置页导入新课表后立即生效，无需重启 App）
+        refreshScheduleFromStore()
+    }
+
+    /** 重新从本地课表缓存解析并刷新显示（设置页导入/清除后返回主界面调用） */
+    private fun refreshScheduleFromStore() {
+        val cached = credStore.scheduleCacheIcs()
+        if (cached.isNullOrBlank()) {
+            scheduleCourses = emptyList()
+        } else {
+            scheduleCourses = parseIcs(cached)
+        }
+        updateCourseDisplay()
     }
 
     override fun onPause() {
@@ -2000,6 +2014,13 @@ class MainActivity : Activity() {
                             wasOnLoginPage = false
                             showSignPanel()
                         }
+                        // 认证成功：本次刚自动提交登录且页面不在签到页 → 等 1 秒重建 Activity（不退出进程），
+                        // cookie 已有效，重建后直接稳定回签到页，避开认证回跳造成的路由错乱
+                        val curAfterLogin = webView.url ?: ""
+                        if (autoLoginSubmitted && !curAfterLogin.contains("#/sign/") && !restartedAfterLogin) {
+                            restartedAfterLogin = true
+                            handler.postDelayed({ recreate() }, 1000)
+                        }
                         gotoSignPageIfNeeded()
                     }
                     r.startsWith("url:") -> {
@@ -2046,9 +2067,11 @@ class MainActivity : Activity() {
     private fun gotoSignPageIfNeeded() {
         if (prevSigned) return
         // 站点路由会把 JS 改的 hash 拉回课表，必须整页导航 #/sign/in（SPA 从签到页初始化）；
-        // 已在签到页则不动，避免重复刷新
+        // 已登录但不在签到页（含认证回跳后 URL 无 #/ 片段或停在课表/根路由）→ 整页导航回签到页；
+        // 只在 probe ok（登录成功、页面加载完成）时调用，不会循环
         val u = webView.url ?: ""
-        if (u.contains("#/") && !u.contains("#/sign/")) {
+        val host = try { Uri.parse(u).host?.lowercase() ?: "" } catch (e: Exception) { "" }
+        if (host.endsWith("skl.hdu.edu.cn") && !u.contains("#/sign/")) {
             webView.loadUrl(SignInjector.HOME_URL)
         }
     }

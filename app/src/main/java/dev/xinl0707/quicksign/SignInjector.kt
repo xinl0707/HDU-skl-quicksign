@@ -53,44 +53,49 @@ object SignInjector {
         val p = JSONObject.quote(password)
         val submitJs = if (submit) """
               setTimeout(function(){
-                // 等 Angular model 同步到 hidden 提交字段（最多 1.5s），同步后再点登录
-                function waitSync(round){
+                // 等 Angular model 同步到 hidden 提交字段 + 登录按钮渲染完成（最多约 2.4s），
+                // 两者就绪后才点击登录；找不到 hidden 字段时以按钮出现为准
+                function findBtn(){
+                  var b = document.querySelector('button[type=submit]')
+                    || document.querySelector('.login-btn, button.login-btn, #loginBtn, #submitBtn, ion-button[type="submit"], .van-button--primary');
+                  if (b) return b;
+                  var all = document.querySelectorAll('button, a, input[type=submit], [role="button"]');
+                  for (var i = 0; i < all.length; i++) {
+                    var x = all[i];
+                    if (/登录|登\s*录|sign\s*in|submit|login/i.test(x.textContent || x.value || '')) { return x; }
+                  }
+                  return null;
+                }
+                function doClick(){
+                  var btn = findBtn();
+                  if (!btn) {
+                    var form = document.querySelector('form');
+                    if (form) { try { form.requestSubmit(); window.__autoLoginSubmitted = true; } catch(e) {} }
+                    return;
+                  }
+                  try { if (btn.disabled) btn.disabled = false; } catch(e) {}
+                  try {
+                    btn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+                    btn.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
+                  } catch(e) {}
+                  // 移动端（Ionic/Vant）按钮常只响应 touch 事件
+                  try {
+                    btn.dispatchEvent(new TouchEvent('touchstart', {bubbles: true, cancelable: true}));
+                    btn.dispatchEvent(new TouchEvent('touchend', {bubbles: true, cancelable: true}));
+                  } catch(e) {}
+                  try { btn.click(); window.__autoLoginSubmitted = true; } catch(e) {}
+                }
+                function waitReady(round){
                   var hu = document.querySelector('input[name=username][type=hidden]');
                   var hp = document.querySelector('input[name=password][type=hidden]');
                   var ok = true;
                   if (hu) ok = ok && (hu.value === u);
                   if (hp) ok = ok && (hp.value === p);
-                  if (ok || round >= 5) { doClick(); }
-                  else { setTimeout(function(){ waitSync(round + 1); }, 300); }
+                  var btn = findBtn();
+                  if ((ok && btn) || round >= 8) { doClick(); }
+                  else { setTimeout(function(){ waitReady(round + 1); }, 300); }
                 }
-                function doClick(){
-                  var btn = document.querySelector('button[type=submit]')
-                    || document.querySelector('.login-btn, button.login-btn, #loginBtn, #submitBtn, ion-button[type="submit"], .van-button--primary');
-                  if (!btn) {
-                    var all = document.querySelectorAll('button, a, input[type=submit], [role="button"]');
-                    for (var i = 0; i < all.length; i++) {
-                      var b = all[i];
-                      if (/登录|登\s*录|sign\s*in|submit|login/i.test(b.textContent || b.value || '')) { btn = b; break; }
-                    }
-                  }
-                  if (btn) {
-                    try { if (btn.disabled) btn.disabled = false; } catch(e) {}
-                    try {
-                      btn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
-                      btn.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
-                    } catch(e) {}
-                    // 移动端（Ionic/Vant）按钮常只响应 touch 事件
-                    try {
-                      btn.dispatchEvent(new TouchEvent('touchstart', {bubbles: true, cancelable: true}));
-                      btn.dispatchEvent(new TouchEvent('touchend', {bubbles: true, cancelable: true}));
-                    } catch(e) {}
-                    try { btn.click(); window.__autoLoginSubmitted = true; } catch(e) {}
-                  } else {
-                    var form = document.querySelector('form');
-                    if (form) { try { form.requestSubmit(); window.__autoLoginSubmitted = true; } catch(e) {} }
-                  }
-                }
-                waitSync(0);
+                waitReady(0);
               }, 500);
               return 'will-submit';
         """.trimIndent() else "return 'filled-only';"

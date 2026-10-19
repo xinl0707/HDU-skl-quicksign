@@ -281,6 +281,7 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
         userInput = edit("请输入学号")
+        autoSave(userInput)
         accountBlock.addView(userInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
@@ -290,6 +291,7 @@ class SettingsActivity : Activity() {
         passInput = edit("请输入密码", password = true).apply {
             setText(credStore.password() ?: "")
         }
+        autoSave(passInput)
         accountBlock.addView(passInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
@@ -311,6 +313,7 @@ class SettingsActivity : Activity() {
             textSize = 13f
             setTextColor(TEXT)
             isChecked = credStore.autoLogin()
+            setOnCheckedChangeListener { _, _ -> autoSaveAll() }
         }
         accountBlock.addView(autoLoginCheck)
         root.addView(accountBlock, LinearLayout.LayoutParams(
@@ -341,6 +344,7 @@ class SettingsActivity : Activity() {
             textSize = 13f
             setTextColor(TEXT)
             isChecked = credStore.autoListen()
+            setOnCheckedChangeListener { _, checked -> credStore.setAutoListen(checked) }
         }
         voiceBlock.addView(autoListenCheck, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -350,6 +354,7 @@ class SettingsActivity : Activity() {
             textSize = 13f
             setTextColor(TEXT)
             isChecked = credStore.showSpeechInfo()
+            setOnCheckedChangeListener { _, checked -> credStore.setShowSpeechInfo(checked) }
         }
         voiceBlock.addView(showSpeechInfoCheck, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -367,6 +372,7 @@ class SettingsActivity : Activity() {
             setText(credStore.mimoApiKey() ?: "")
             textSize = 14f
         }
+        autoSave(mimoKeyInput)
         mimoBox.addView(mimoKeyInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
@@ -390,6 +396,7 @@ class SettingsActivity : Activity() {
             setText(credStore.mimoBaseUrl())
             textSize = 13f
         }
+        autoSave(mimoUrlInput)
         mimoBox.addView(mimoUrlInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
@@ -400,6 +407,7 @@ class SettingsActivity : Activity() {
             setText(credStore.mimoAsrModel())
             textSize = 13f
         }
+        autoSave(mimoAsrInput)
         mimoBox.addView(mimoAsrInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
@@ -410,6 +418,7 @@ class SettingsActivity : Activity() {
             setText(credStore.mimoModel())
             textSize = 13f
         }
+        autoSave(mimoModelInput)
         mimoBox.addView(mimoModelInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
@@ -510,25 +519,15 @@ class SettingsActivity : Activity() {
 
         // ========== 操作块 ==========
         val actionBlock = block("操作")
-        // 保存已移到右上角，这里只保留"保存并登录"与"清除账号"
-        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val loginBtn = button("保存并登录", LIGHT, ACCENT)
-        loginBtn.setOnClickListener {
-            if (save(close = false)) {
-                toast("已保存")
-                finish()
-            }
-        }
-        val clearBtn = button("清除账号", LIGHT, 0xFFFA5151.toInt())
+        // "保存并登录"已与右上角"保存"合并（保存后返回主界面即自动登录），操作块只保留清除账号
+        val clearBtn = button("清除账号", LIGHT, 0xFFFA5151.toInt(), big = true)
         clearBtn.setOnClickListener {
             credStore.clear()
             userInput.setText("")
             passInput.setText("")
             toast("账号已清除")
         }
-        row2.addView(loginBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(8) })
-        row2.addView(clearBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
-        actionBlock.addView(row2, LinearLayout.LayoutParams(
+        actionBlock.addView(clearBtn, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
         root.addView(actionBlock, LinearLayout.LayoutParams(
@@ -581,6 +580,36 @@ class SettingsActivity : Activity() {
                 }
                 handler.postDelayed(this, 1000)
             }
+        })
+    }
+
+    /** 自动保存防抖：输入/开关改动 500ms 后统一落盘（账号密码加密保存，避免逐字符触发 Keystore） */
+    private val credSaveRunnable = Runnable {
+        val u = userInput.text.toString().trim()
+        val p = passInput.text.toString()
+        if (u.isNotEmpty() && p.isNotEmpty()) {
+            credStore.save(u, p, autoLoginCheck.isChecked)
+        }
+        credStore.setVoiceEngine("mimo")   // 语音识别仅 MIMO 云端引擎（系统识别已移除）
+        credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
+        credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
+        credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
+        credStore.setMimoModel(mimoModelInput.text.toString().trim())
+        credStore.setAutoListen(autoListenCheck.isChecked)
+        credStore.setShowSpeechInfo(showSpeechInfoCheck.isChecked)
+    }
+
+    private fun autoSaveAll() {
+        handler.removeCallbacks(credSaveRunnable)
+        handler.postDelayed(credSaveRunnable, 500)
+    }
+
+    /** 给输入框挂自动保存（改动即存，无需点保存按钮） */
+    private fun autoSave(view: android.widget.EditText) {
+        view.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { autoSaveAll() }
         })
     }
 
