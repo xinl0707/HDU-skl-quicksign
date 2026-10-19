@@ -3,6 +3,7 @@ package dev.xinl0707.quicksign
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -161,6 +162,12 @@ class SettingsActivity : Activity() {
         super.onCreate(savedInstanceState)
         credStore = CredentialStore(this)
         buildUi()
+        // Android 13+ 手势返回/预测性返回不走 onBackPressed：首次引导模式下手势返回也要禁用
+        if (firstRun && Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(0) {
+                toast("请点击右上角「保存」完成设置")
+            }
+        }
     }
 
     override fun onDestroy() {

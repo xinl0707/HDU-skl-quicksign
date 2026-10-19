@@ -401,8 +401,9 @@ class MainActivity : Activity() {
         // 底部状态栏可见性按设置开关刷新（设置页切换后返回生效）
         statusWrap?.visibility = if (credStore.hideStatusBar()) View.GONE else View.VISIBLE
         // 首次引导完成后（引导进设置页 → 用户保存/返回主界面）：开始加载 WebView，
-        // 至此免责声明与权限流程已结束，避免后台加载的时机问题
-        if (!webViewStarted && credStore.disclaimerAccepted()) {
+        // 至此免责声明与权限流程已结束，避免后台加载的时机问题；
+        // 引导层仍可见时（含权限弹窗来回触发的 onResume）绝不允许提前加载
+        if (!webViewStarted && credStore.disclaimerAccepted() && guideOverlay?.visibility != View.VISIBLE) {
             webViewStarted = true
             webView.loadUrl(SignInjector.HOME_URL)
         }
