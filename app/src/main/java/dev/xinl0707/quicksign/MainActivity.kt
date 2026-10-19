@@ -142,6 +142,10 @@ class MainActivity : Activity() {
     private var prevSigned = false
     private var signPageFirstSeenAt = 0L
     private var lastSignNavAt = 0L        // 回切签到页路由节流
+    private var signNavCount = 0          // 回切签到页连续次数（防站点路由拉回造成无限重载）
+    private var lastSignNavResetAt = 0L
+    private var lastProbeOkAt = 0L        // 最近一次探测成功时间（登录记忆，防"明明登录了却跳统一认证"误报）
+    private var lastLoginPageSeenAt = 0L  // 登录页首次出现时间（超时判定 cookie 是否真失效）
     private var lastReloadAt = 0L
     private var autoLoginCooldownUntil = 0L
     private var ssoLoadCount = 0          // 连续 SSO 域页面加载计数（防重定向死循环）
@@ -654,6 +658,14 @@ class MainActivity : Activity() {
         buildConfettiLayer()
         trace("buildUi bigOverlay ok")
 
+        // 启动层最后 addView：rootFrame 是 FrameLayout，后加的在最上层——
+        // 主界面先铺好，splash 盖在最上面才可见（首帧品牌色由 windowBackground 兜底）
+        if (::splashLayer.isInitialized) {
+            rootFrame.addView(splashLayer, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+        }
+
         setContentView(rootFrame)
         // 秒级时钟：签到面板顶部显示当前时间（精确到秒）
         handler.post(object : Runnable {
@@ -709,9 +721,8 @@ class MainActivity : Activity() {
         splashLayer.addView(spinnerWrap, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(120), Gravity.BOTTOM
         ))
-        rootFrame.addView(splashLayer, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
-        ))
+        // 注意：splashLayer 不在 buildSplashLayer 里 addView——
+        // 必须在主界面 root 之后 addView 才能盖在最上层（FrameLayout 后加的在上）
         // 兜底：最多展示约 0.8 秒（页面/登录就绪也不会早于最短时长淡出，保证开屏可见）
         splashShownAt = System.currentTimeMillis()
         handler.postDelayed({ dismissSplash() }, 800)
@@ -1189,14 +1200,24 @@ class MainActivity : Activity() {
         } else {
             ssoBlockSeconds = 0
         }
-        // 登录回跳后 skl 站点默认首页是课表(#/call/course)：签到面板显示时，
-        // 非签到路由立即用 JS 改 hash 切回（不整页重载、不闪白；节流 2 秒防循环）
+        // 登录回跳后 skl 站点默认首页是课表(#/call/course)，且站点路由会把外部改的 hash 拉回课表：
+        // 签到面板显示时，非签到路由整页导航回签到页（SPA 从 #/sign/in 初始化，登录态在 cookie，稳定停留；
+        // 节流 2 秒 + 10 秒内最多 3 次，防站点路由再次拉回造成无限重载）
         if (signPanelShown) {
             val u = curUrl
-            if (u.contains("hdu.edu.cn") && u.contains("#/") && !u.contains("#/sign/") &&
-                    System.currentTimeMillis() - lastSignNavAt > 2000) {
-                lastSignNavAt = System.currentTimeMillis()
-                evalJs("if (location.hash.indexOf('#/sign/in') < 0) { location.hash = '#/sign/in'; 'ok' } else 'noop'") { _ -> }
+            val onWrongRoute = u.contains("hdu.edu.cn") && u.contains("#/") && !u.contains("#/sign/")
+            if (onWrongRoute) {
+                if (System.currentTimeMillis() - lastSignNavResetAt > 10000) {
+                    signNavCount = 0
+                    lastSignNavResetAt = System.currentTimeMillis()
+                }
+                if (signNavCount < 3 && System.currentTimeMillis() - lastSignNavAt > 2000) {
+                    lastSignNavAt = System.currentTimeMillis()
+                    signNavCount++
+                    webView.loadUrl(SignInjector.HOME_URL)
+                } else if (signNavCount >= 3) {
+                    statusText.text = "签到页恢复失败，请点「查看网页」"
+                }
             }
         }
         evalJs(SignInjector.JS_DETECT_STATE) { raw ->
@@ -1245,6 +1266,7 @@ class MainActivity : Activity() {
                 signReady = false
                 prevSigned = false
                 signPageFirstSeenAt = 0L
+                if (lastLoginPageSeenAt == 0L) lastLoginPageSeenAt = System.currentTimeMillis()
                 if (!credStore.hasCredentials()) {
                     // 没保存账号：必须切到网页让用户看到登录页
                     showWebOnly()
@@ -1254,6 +1276,15 @@ class MainActivity : Activity() {
                     showWebOnly()
                     statusText.text = "登录页：检测到验证码，请手动完成登录"
                     tryAutoLogin(submit = false)
+                } else if (likelyLoggedIn()) {
+                    // 最近 30 分钟内登录成功过：页面经过登录页只是 CAS 校验链（cookie 有效，1-2 秒回跳），
+                    // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，才重新登录
+                    if (System.currentTimeMillis() - lastLoginPageSeenAt > 15000) {
+                        statusText.text = "登录页：重新自动登录中…"
+                        tryAutoLogin(submit = true)
+                    } else {
+                        statusText.text = "登录校验中…（页面回跳中）"
+                    }
                 } else if (autoLoginSubmitted) {
                     // 已自动提交过一次：给页面时间跳转；
                     // 若超过 12 秒仍停留登录页，说明提交未生效，重置标志重新填表提交（最多 2 次，防死循环）
@@ -1281,6 +1312,7 @@ class MainActivity : Activity() {
             }
             sign || sign2 -> {
                 signReady = true
+                lastLoginPageSeenAt = 0L // 离开登录页：重置登录页停留计时
                 dismissSplash() // 页面就绪：启动层提前淡出（无需等满 1.6 秒）
                 // 签到界面加载完成：隐藏加载动画，显示四位横线与键盘（加载完成前隐藏，显示"加载中"）
                 panelTitleText.text = "签到就绪"
@@ -1394,6 +1426,11 @@ class MainActivity : Activity() {
      * - 401：后端返回 data.url（CAS → SSO 登录地址），loadUrl 跳转（自动切桌面 UA）
      * - 200：已登录，停止探测，必要时跳回签到页
      */
+    /** 登录记忆：最近 30 分钟内探测成功过 → 认为已登录（页面经过登录页只是 CAS 校验链，不重复注入） */
+    private fun likelyLoggedIn(): Boolean {
+        return lastProbeOkAt > 0 && System.currentTimeMillis() - lastProbeOkAt < 30 * 60 * 1000
+    }
+
     private fun maybeProbeLogin() {
         if (loginOk) return
         val now = System.currentTimeMillis()
@@ -1461,6 +1498,7 @@ class MainActivity : Activity() {
                 when {
                     r == "ok" -> {
                         loginOk = true
+                        lastProbeOkAt = System.currentTimeMillis()
                         probeFailCount = 0
                         autoLoginRetries = 0      // 登录成功：重置自动登录重试计数
                         ssoLoadCount = 0         // 登录成功：重置 SSO 循环计数
@@ -1477,16 +1515,28 @@ class MainActivity : Activity() {
                         probeFailCount = 0
                         val loginUrl = r.removePrefix("url:")
                         appendLog("probe url: $loginUrl")
-                        if (System.currentTimeMillis() < ssoBlockedUntil) {
+                        if (signReady) {
+                            // 页面已渲染签到页 = 登录态有效（未登录不可能看到签到内容）；
+                            // probe 401 是探测接口误报（header/cookie 不全或瞬时失败），不跳 SSO
+                            loginOk = true
+                            appendLog("probe 401 但页面已就绪，视为已登录")
+                            statusText.text = "签到就绪（已登录）"
+                        } else if (System.currentTimeMillis() < ssoBlockedUntil) {
                             // SSO 循环冷却期内：不再自动跳 SSO，引导手动登录（避免死循环）
                             statusText.text = "登录状态异常，请点「查看网页」手动完成登录"
                             showWebOnly()
                         } else {
-                            statusText.text = "未登录，正在跳转统一认证…"
-                            // 关键：loadUrl 不会经过 shouldOverrideUrlLoading，
-                            // 必须在这里先切桌面 UA，否则 SSO 收到手机 UA 会返回手机端登录界面
-                            applyUAFor(loginUrl)
-                            webView.loadUrl(loginUrl)
+                            // 不立即跳 SSO：cookie 有效时页面会自行完成 CAS 校验回跳（1-2 秒）；
+                            // 等 8 秒页面仍未渲染签到页（真未登录/校验失败）才主动导航登录页
+                            statusText.text = "正在验证登录…"
+                            val probeAt = System.currentTimeMillis()
+                            handler.postDelayed({
+                                if (!signReady && !loginOk &&
+                                        System.currentTimeMillis() - probeAt >= 7000) {
+                                    applyUAFor(loginUrl)
+                                    webView.loadUrl(loginUrl)
+                                }
+                            }, 8000)
                         }
                     }
                     else -> {
@@ -1503,7 +1553,12 @@ class MainActivity : Activity() {
 
     /** 已登录但不在签到页时，通过 hash 路由切回签到页（不整页加载，避免循环） */
     private fun gotoSignPageIfNeeded() {
-        evalJs("if (location.hash.indexOf('#/sign/in') < 0) location.hash = '#/sign/in'; 'ok'") { _ -> }
+        // 站点路由会把 JS 改的 hash 拉回课表，必须整页导航 #/sign/in（SPA 从签到页初始化）；
+        // 已在签到页则不动，避免重复刷新
+        val u = webView.url ?: ""
+        if (u.contains("#/") && !u.contains("#/sign/")) {
+            webView.loadUrl(SignInjector.HOME_URL)
+        }
     }
 
     // ------------------------------------------------------------------ 签到码输入
