@@ -21,6 +21,7 @@ import android.text.format.DateFormat
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
 import android.webkit.GeolocationPermissions
@@ -32,6 +33,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -115,6 +117,9 @@ class MainActivity : Activity() {
     private lateinit var bigOverlay: FrameLayout
     private lateinit var bigCodeText: TextView
     private var bigOverlayShown = false
+    // 内嵌启动层：品牌色开屏，期间后台并行加载网页/探测登录（不纯等待）
+    private lateinit var splashLayer: FrameLayout
+    private var splashDismissed = false
     // 签到键盘：签到页加载完成（signReady）前隐藏，显示"加载中"；就绪后才展示
     private var panelKeyGrid: GridLayout? = null
     // 加载动画：键盘未就绪（signReady=false）时显示转圈，就绪后隐藏
@@ -140,6 +145,8 @@ class MainActivity : Activity() {
     private var autoLoginCooldownUntil = 0L
     private var ssoLoadCount = 0          // 连续 SSO 域页面加载计数（防重定向死循环）
     private var autoLoginRetries = 0      // 自动登录提交重试次数（超限转手动）
+    private var ssoBlockSeconds = 0       // 连续停在 SSO 域的秒数（pollTick 轮询检测）
+    private var ssoBlockedUntil = 0L      // SSO 循环阻断冷却：期间不再自动跳转 SSO
     private var autoLoginSubmitted = false // 登录页已自动提交过一次，避免反复提交干扰验证码
     private var autoLoginSubmittedAt = 0L
 
@@ -640,6 +647,7 @@ class MainActivity : Activity() {
         trace("buildUi bigOverlay ok")
 
         setContentView(rootFrame)
+        buildSplashLayer()
         // 秒级时钟：签到面板顶部显示当前时间（精确到秒）
         handler.post(object : Runnable {
             override fun run() {
@@ -651,6 +659,67 @@ class MainActivity : Activity() {
             }
         })
         trace("buildUi done")
+    }
+
+    // ------------------------------------------------------------------ 内嵌启动层（开屏）
+
+    /** 品牌色全屏启动层：显示期间 MainActivity 已并行加载网页/探测登录，
+     *  不纯等待；网页就绪或超时后淡出。*/
+    private fun buildSplashLayer() {
+        val palette = ThemePalette.palette(themeStyle(), isNight)
+        splashLayer = FrameLayout(this).apply {
+            setBackgroundColor(palette.bg)
+        }
+        val center = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+        }
+        center.addView(ImageView(this).apply { setImageResource(R.drawable.ic_launcher) },
+            LinearLayout.LayoutParams(dp(88), dp(88)))
+        center.addView(TextView(this).apply {
+            text = "上课啦签到"
+            textSize = 19f
+            setTextColor(palette.text)
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(14) })
+        center.addView(TextView(this).apply {
+            text = "正在加载签到服务…"
+            textSize = 13f
+            setTextColor(palette.sub)
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
+        splashLayer.addView(center, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER
+        ))
+        val spinner = ProgressBar(this, null, android.R.attr.progressBarStyleSmall)
+        val spinnerWrap = FrameLayout(this).apply {
+            addView(spinner, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+        }
+        splashLayer.addView(spinnerWrap, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(120), Gravity.BOTTOM
+        ))
+        rootFrame.addView(splashLayer, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        // 兜底：最多展示约 1.6 秒（页面/登录就绪会提前淡出）
+        handler.postDelayed({ dismissSplash() }, 1600)
+    }
+
+    /** 淡出启动层（幂等） */
+    private fun dismissSplash() {
+        if (splashDismissed || !::splashLayer.isInitialized) return
+        splashDismissed = true
+        try {
+            splashLayer.animate().alpha(0f).setDuration(450)
+                .withEndAction { splashLayer.visibility = View.GONE }
+                .start()
+        } catch (e: Exception) {
+            splashLayer.visibility = View.GONE
+        }
     }
 
     // ------------------------------------------------------------------ 原生签到面板
@@ -1093,6 +1162,26 @@ class MainActivity : Activity() {
 
     private fun pollTick() {
         if (!pollRunning) return
+        // SSO 循环硬拦截：HTTP 302 重定向链在 WebView 内部处理，onPageStarted 不会逐跳回调，
+        // 这里每秒轮询 WebView 当前 URL，连续停在 SSO 域（cas/sso/auth）超过阈值 → 判定循环 → 停止
+        val curUrl = webView.url ?: ""
+        val curHost = try { Uri.parse(curUrl).host?.lowercase() ?: "" } catch (e: Exception) { "" }
+        val curIsSso = curHost.contains("sso") || curHost.contains("cas") ||
+                curHost.contains("auth") || curHost.contains("passport")
+        if (curIsSso) {
+            ssoBlockSeconds++
+            if (ssoBlockSeconds >= 8) { // 连续约 8 秒未离开 SSO 域 = 重定向死循环
+                ssoBlockSeconds = 0
+                ssoBlockedUntil = System.currentTimeMillis() + 120000 // 2 分钟不再自动跳 SSO
+                autoLoginCooldownUntil = System.currentTimeMillis() + 120000
+                autoLoginSubmitted = false
+                try { webView.stopLoading() } catch (e: Exception) {}
+                statusText.text = "登录异常（SSO 循环）：请点「查看网页」手动登录"
+                DebugLog.append("SSO循环: 连续 8 秒停在 SSO 域，已停止自动登录，请手动登录")
+            }
+        } else {
+            ssoBlockSeconds = 0
+        }
         evalJs(SignInjector.JS_DETECT_STATE) { raw ->
             handleState(raw)
             flushPendingPanelInput()
@@ -1175,6 +1264,7 @@ class MainActivity : Activity() {
             }
             sign || sign2 -> {
                 signReady = true
+                dismissSplash() // 页面就绪：启动层提前淡出（无需等满 1.6 秒）
                 // 签到界面加载完成：隐藏加载动画，显示四位横线与键盘（加载完成前隐藏，显示"加载中"）
                 panelTitleText.text = "签到就绪"
                 panelTitleText.setTextColor(TEXT)
@@ -1346,6 +1436,8 @@ class MainActivity : Activity() {
                         probeFailCount = 0
                         autoLoginRetries = 0      // 登录成功：重置自动登录重试计数
                         ssoLoadCount = 0         // 登录成功：重置 SSO 循环计数
+                        ssoBlockSeconds = 0      // 登录成功：重置 SSO 循环轮询计数
+                        dismissSplash()          // 已登录：启动层提前淡出
                         appendLog("probe ok")
                         // SSO 桌面端登录已回跳，恢复签到站点的移动 UA
                         applyUAFor(SignInjector.HOME_URL)
@@ -1357,11 +1449,17 @@ class MainActivity : Activity() {
                         probeFailCount = 0
                         val loginUrl = r.removePrefix("url:")
                         appendLog("probe url: $loginUrl")
-                        statusText.text = "未登录，正在跳转统一认证…"
-                        // 关键：loadUrl 不会经过 shouldOverrideUrlLoading，
-                        // 必须在这里先切桌面 UA，否则 SSO 收到手机 UA 会返回手机端登录界面
-                        applyUAFor(loginUrl)
-                        webView.loadUrl(loginUrl)
+                        if (System.currentTimeMillis() < ssoBlockedUntil) {
+                            // SSO 循环冷却期内：不再自动跳 SSO，引导手动登录（避免死循环）
+                            statusText.text = "登录状态异常，请点「查看网页」手动完成登录"
+                            showWebOnly()
+                        } else {
+                            statusText.text = "未登录，正在跳转统一认证…"
+                            // 关键：loadUrl 不会经过 shouldOverrideUrlLoading，
+                            // 必须在这里先切桌面 UA，否则 SSO 收到手机 UA 会返回手机端登录界面
+                            applyUAFor(loginUrl)
+                            webView.loadUrl(loginUrl)
+                        }
                     }
                     else -> {
                         probeFailCount++
