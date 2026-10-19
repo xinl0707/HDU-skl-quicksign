@@ -29,14 +29,7 @@ object SignInjector {
           var hasPw = !!pw;
           var captcha = false;
           if (hasPw) {
-            // 只认真正的图形验证码图片（img src 明确含 captcha/verify，且非 data: 内联图）；
-            // 不用 img[src*="code"] 和 [id*="captcha"]/[class*="captcha"]——登录页"短信验证码"tab/滑块
-            // 组件会被泛匹配误判成验证码，导致界面乱切网页并提示"检测到验证码"
-            var imgs = document.querySelectorAll('img[src*="captcha" i], img[src*="verify" i]');
-            for (var i = 0; i < imgs.length; i++) {
-              var s = (imgs[i].src || '').toLowerCase();
-              if (s.indexOf('data:') !== 0 && (s.indexOf('captcha') >= 0 || s.indexOf('verify') >= 0)) { captcha = true; break; }
-            }
+            captcha = !!document.querySelector('img[src*="captcha" i], img[src*="code" i], img[src*="verify" i], [id*="captcha" i], [class*="captcha" i]');
           }
           var sign = !!document.getElementById('captcha-trigger-btn');
           var sign2 = !!document.querySelector('.stu-sign');

@@ -159,8 +159,6 @@ class MainActivity : Activity() {
     private lateinit var courseDetailText: TextView
     private lateinit var clockText: TextView
     private var lastLocReqAt = 0L                 // 原生定位请求节流
-    private var isPaused = false                  // 主界面是否在后台（设置页/课表等前台时不弹登录 toast、不主动登录）
-    private var pendingLoginToast = false         // 从设置页保存返回后，登录页提示"手动点登录"只弹一次
     // 面板标题：加载中显示"加载中…"，就绪后显示"签到就绪"
     private lateinit var panelTitleText: TextView
     private var locDisplayText: TextView? = null   // 经纬度显示（时间下方，N/S/E/W + 度数）
@@ -389,8 +387,6 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        isPaused = false
-        pendingLoginToast = true   // 回到前台（含从设置页保存返回）：允许弹一次"手动点登录"提示
         // 从设置页/课表/考勤等界面返回后，立即允许自动登录与登录态探测
         autoLoginCooldownUntil = 0
         loginProbeCooldownUntil = 0
@@ -430,7 +426,6 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        isPaused = true
         // 离开主界面（设置页/课表/考勤/后台）：立即停止全部监听，任何非键盘界面都不监听
         stopListeningQuiet()
     }
@@ -1807,16 +1802,10 @@ class MainActivity : Activity() {
                     // 最近 30 分钟内登录成功过：页面经过登录页只是 CAS 校验链（cookie 有效，1-2 秒回跳），
                     // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，重新填表并提示手动点击
                     if (System.currentTimeMillis() - lastLoginPageSeenAt > 15000) {
-                        showWebOnly()
                         statusText.text = "登录页：已填账号密码，请手动点击登录"
                         tryAutoLogin(submit = false)
-                        if (pendingLoginToast) {
-                            pendingLoginToast = false
-                            toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
-                        }
+                        toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
                     } else {
-                        // 认证校验回跳中：显示网页让用户看到登录页，键盘覆盖不遮挡认证界面
-                        showWebOnly()
                         statusText.text = "登录校验中…（页面回跳中）"
                     }
                 } else if (autoLoginSubmitted) {
@@ -1839,16 +1828,11 @@ class MainActivity : Activity() {
                         statusText.text = "登录页：已自动提交，等待页面处理…"
                     }
                 } else {
-                    // 杭电认证界面（统一身份认证）：一律显示网页，键盘覆盖屏蔽，避免"弹到键盘一直转圈"；
-                    // 自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
-                    // toast 只在保存返回主界面后弹一次（填写账号自动保存时不弹，仅点保存后弹）
-                    showWebOnly()
+                    // 后台自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
+                    // toast 提示用户手动点击登录按钮；点登录后回跳签到页，由 loginFlowPending 自动切回面板
                     statusText.text = "登录页：已填账号密码，请手动点击登录"
                     tryAutoLogin(submit = false)
-                    if (pendingLoginToast) {
-                        pendingLoginToast = false
-                        toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
-                    }
+                    toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
                 }
             }
             sign || sign2 -> {
@@ -1886,18 +1870,33 @@ class MainActivity : Activity() {
                 }
                 prevSigned = false
                 if (signPageFirstSeenAt == 0L) signPageFirstSeenAt = System.currentTimeMillis()
-                // 键盘始终可用：页面 loc 标志（.sign-page .tip-item.location）在登录回跳/路由切换瞬间
-                // 不可靠，曾导致"手动登录后键盘一直转圈"；定位状态改由下方经纬度文本原生刷新，
-                // 不再用页面 loc 标志阻塞键盘显示
-                locLoadingBar?.visibility = View.GONE
-                panelKeyGrid?.visibility = View.VISIBLE
-                panelCodeDisplay.visibility = View.VISIBLE
-                statusText.text = when {
-                    !hasLocationPermission() -> "签到就绪：需要定位权限，请在弹窗中允许"
-                    loc -> "签到就绪（定位正常）"
-                    else -> "签到就绪"
+                if (sign && !loc && loginOk) {
+                    // 已登录但定位未拿到：等定位，必要时刷新（未登录时不刷新，避免反复加载）
+                    val elapsed = System.currentTimeMillis() - signPageFirstSeenAt
+                    // 定位中转圈显示在键盘位置（与加载动画同款大转圈），键盘与四位横线暂隐
+                    panelTitleText.text = "定位中"
+                    panelTitleText.setTextColor(SUB)
+                    panelKeyGrid?.visibility = View.GONE
+                    panelCodeDisplay.visibility = View.GONE
+                    loadingBar?.visibility = View.GONE
+                    locLoadingBar?.visibility = View.VISIBLE
+                    statusText.text = "签到就绪：等待定位…"
+                    updateLocation()
+                    if (!hasLocationPermission() && elapsed > 8000) {
+                        statusText.text = "签到就绪：需要定位权限，请在弹窗中允许"
+                        requestNeededPermissions()
+                    } else if (elapsed > 12000 && System.currentTimeMillis() - lastReloadAt > 60000) {
+                        lastReloadAt = System.currentTimeMillis()
+                        webView.reload()
+                    }
+                } else {
+                    // 定位已就绪/无需等待：恢复键盘、关闭定位转圈，并显示当前经纬度
+                    locLoadingBar?.visibility = View.GONE
+                    panelKeyGrid?.visibility = View.VISIBLE
+                    panelCodeDisplay.visibility = View.VISIBLE
+                    statusText.text = if (loc) "签到就绪（定位正常）" else "签到就绪"
+                    updateLocation()
                 }
-                updateLocation()
                 maybeAutoListen()
                 }
                 maybeProbeLogin()
@@ -2083,23 +2082,17 @@ class MainActivity : Activity() {
                             statusText.text = "登录状态异常，请点「查看网页」手动完成登录"
                             showWebOnly()
                         } else {
-                            // probe 401：不主动跳 CAS——如果 WebView 已在签到页(skl域)，
-                            // 签到页自身 JS 检测未登录会自动重定向 SSO，主动 loadUrl 会与页面自跳转冲突造成乱跳；
-                            // 仅当 WebView 不在 skl 域(空白页/错误页)时，等 8 秒仍未就绪才主动导航登录页
-                            val curHost = webView.url?.let { Uri.parse(it).host } ?: ""
-                            if (curHost.endsWith("skl.hdu.edu.cn")) {
-                                statusText.text = "正在验证登录…"
-                            } else {
-                                statusText.text = "正在验证登录…"
-                                val probeAt = System.currentTimeMillis()
-                                handler.postDelayed({
-                                    if (!signReady && !loginOk &&
-                                            System.currentTimeMillis() - probeAt >= 7000) {
-                                        applyUAFor(loginUrl)
-                                        webView.loadUrl(loginUrl)
-                                    }
-                                }, 8000)
-                            }
+                            // 不立即跳 SSO：cookie 有效时页面会自行完成 CAS 校验回跳（1-2 秒）；
+                            // 等 8 秒页面仍未渲染签到页（真未登录/校验失败）才主动导航登录页
+                            statusText.text = "正在验证登录…"
+                            val probeAt = System.currentTimeMillis()
+                            handler.postDelayed({
+                                if (!signReady && !loginOk &&
+                                        System.currentTimeMillis() - probeAt >= 7000) {
+                                    applyUAFor(loginUrl)
+                                    webView.loadUrl(loginUrl)
+                                }
+                            }, 8000)
                         }
                     }
                     else -> {
