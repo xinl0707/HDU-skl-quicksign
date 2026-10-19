@@ -49,6 +49,7 @@ class MiMoSpeechEngine(
         private const val BYTES_PER_SEC = SAMPLE_RATE * 2
         private const val RING_SECONDS = 10
         private const val SLICE_MS = 3000L    // 每 3 秒切一片
+        private const val FIRST_SLICE_MS = 6000L  // 首个切片等 6 秒（多攒音频，提高首片捕获率）
         private const val WINDOW_MS = 10000   // 每片取最近 10 秒（重叠 7 秒，降低断句概率）
     }
 
@@ -206,10 +207,14 @@ class MiMoSpeechEngine(
     private fun startSliceThread(cb: Callback) {
         sliceThread = Thread {
             var sliceNo = 0
+            var firstSlice = true
             while (!stopped) {
-                try { Thread.sleep(SLICE_MS) } catch (e: InterruptedException) { break }
+                // 首个切片等 6 秒再上传（多攒 6 秒音频，提高首片识别捕获率）；
+                // 之后每 3 秒往前切一次，每片取最近 10 秒（重叠 7 秒）
+                try { Thread.sleep(if (firstSlice) FIRST_SLICE_MS else SLICE_MS) } catch (e: InterruptedException) { break }
                 if (stopped) break
                 sliceNo++
+                firstSlice = false
                 val data = readWindow(WINDOW_MS) ?: continue
                 if (data.size < BYTES_PER_SEC / 2) continue        // 少于 0.5 秒不上传
                 // 所有切片一律上传（含静音），不做 VAD 跳过——避免轻声/安静环境下漏识别
