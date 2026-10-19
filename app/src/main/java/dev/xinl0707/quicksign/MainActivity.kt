@@ -127,7 +127,11 @@ class MainActivity : Activity() {
     private var signResultShown = false     // 覆盖页显示中
     private var lastSubmitAt = 0L           // 最近一次提交签到码时间（结果判定窗口）
     private var resultWatchActive = false   // 输码后结果监听进行中
-    private var resultWatchStartAt = 0L     // 结果监听启动时间（10 秒超时判定签到码无效）
+    private var resultWatchStartAt = 0L     // 结果监听启动时间（3 秒超时判定签到码无效）
+    // 签到码无效弹窗：3 秒未跳 detail 弹出（非 toast），后台继续检测 3 秒缓冲，缓冲内成功则切签到成功
+    private var invalidOverlay: FrameLayout? = null
+    private var invalidShown = false
+    private var invalidShownAt = 0L
     // 内嵌启动层：品牌色开屏，期间后台并行加载网页/探测登录（不纯等待）
     private lateinit var splashLayer: FrameLayout
     private var splashDismissed = false
@@ -391,7 +395,7 @@ class MainActivity : Activity() {
         applySystemBars()
 
         // 顶部栏：标题 + 返回面板（网页显示时可见）+ 设置入口（右上角圆形按钮）
-        backPanelBtn = button("返回签到", LIGHT, ACCENT)
+        backPanelBtn = button("返回", LIGHT, ACCENT)
         backPanelBtn.visibility = View.GONE
         backPanelBtn.setOnClickListener { showSignPanel() }
         val settingsBtn = TextView(this).apply {
@@ -409,7 +413,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(10), dp(12), dp(4))
         }
         titleBar.addView(TextView(this).apply {
-            text = "上课啦签到"
+            text = "上课啦"
             textSize = 18f
             setTextColor(TEXT)
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
@@ -428,7 +432,7 @@ class MainActivity : Activity() {
             visibility = View.VISIBLE
         }
         panelTitleText = TextView(this).apply {
-            text = "加载中…"
+            text = "加载中"
             textSize = 22f
             setTextColor(SUB)
             gravity = Gravity.CENTER
@@ -682,7 +686,6 @@ class MainActivity : Activity() {
         rootFrame.addView(bigOverlay, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        buildConfettiLayer()
         trace("buildUi bigOverlay ok")
 
         // 签到完成覆盖页：输码后 URL 跳 #/sign/in/detail（签到成功）自动弹出，
@@ -708,7 +711,7 @@ class MainActivity : Activity() {
         }
         resultCard.addView(badge, LinearLayout.LayoutParams(dp(74), dp(74)))
         val resultTitle = TextView(this).apply {
-            text = "签到完成"
+            text = "签到成功"
             textSize = 27f
             gravity = Gravity.CENTER
             setTextColor(TEXT)
@@ -791,6 +794,53 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
+        // 签到码无效弹窗（类似输入成功的大数字弹窗样式，非 toast）：
+        // 输码后 3 秒 URL 未跳 detail 弹出，显示"签到码无效"+ 小字"或网络超时"，点「重新输入」关闭重输
+        invalidOverlay = FrameLayout(this).apply {
+            visibility = View.GONE
+            setBackgroundColor(0x66000000.toInt())   // 半透明遮罩
+        }
+        val invalidCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = roundedBg(CARD, 26)
+            setPadding(dp(48), dp(34), dp(48), dp(32))
+        }
+        invalidCard.addView(TextView(this).apply {
+            text = "签到码无效"
+            textSize = 40f
+            maxLines = 1
+            gravity = Gravity.CENTER
+            setTextColor(0xFFE53935.toInt())
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        invalidCard.addView(TextView(this).apply {
+            text = "或网络超时"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(SUB)
+            setPadding(dp(0), dp(10), dp(0), dp(0))
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val retryBtn = button("重新输入", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        retryBtn.setOnClickListener { dismissInvalidOverlay() }
+        invalidCard.addView(retryBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(22) })
+        invalidOverlay?.addView(invalidCard, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        rootFrame.addView(invalidOverlay, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+
+        // 彩带层最后 addView：盖在所有浮层（大数字/覆盖页/无效弹窗）之上，纯装饰不拦截点击
+        buildConfettiLayer()
+
         // 启动层最后 addView：rootFrame 是 FrameLayout，后加的在最上层——
         // 主界面先铺好，splash 盖在最上面才可见（首帧品牌色由 windowBackground 兜底）
         if (::splashLayer.isInitialized) {
@@ -829,7 +879,7 @@ class MainActivity : Activity() {
         center.addView(ImageView(this).apply { setImageResource(R.drawable.ic_launcher) },
             LinearLayout.LayoutParams(dp(88), dp(88)))
         center.addView(TextView(this).apply {
-            text = "上课啦签到"
+            text = "上课啦"
             textSize = 19f
             setTextColor(palette.text)
             gravity = Gravity.CENTER
@@ -837,7 +887,7 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(14) })
         center.addView(TextView(this).apply {
-            text = "正在加载签到服务…"
+            text = "正在加载签到服务"
             textSize = 13f
             setTextColor(palette.sub)
             gravity = Gravity.CENTER
@@ -953,14 +1003,14 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 彩带庆祝动画
 
-    /** 彩带容器（叠在大数字卡片之下、遮罩之上，纯装饰不拦截点击） */
+    /** 彩带容器（全屏，盖在所有浮层之上，纯装饰不拦截点击） */
     private lateinit var confettiLayer: FrameLayout
     private var confettiActive = false
 
     private fun buildConfettiLayer() {
         confettiLayer = FrameLayout(this)
         confettiLayer.visibility = View.GONE
-        bigOverlay.addView(confettiLayer, FrameLayout.LayoutParams(
+        rootFrame.addView(confettiLayer, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
     }
@@ -978,8 +1028,8 @@ class MainActivity : Activity() {
         for (wave in 0 until 3) {
             handler.postDelayed({
                 if (!confettiActive) return@postDelayed
-                val w = bigOverlay.width.coerceAtLeast(1)
-                val h = bigOverlay.height.coerceAtLeast(1)
+                val w = rootFrame.width.coerceAtLeast(1)
+                val h = rootFrame.height.coerceAtLeast(1)
                 for (i in 0 until 10) {
                     val piece = View(this)
                     val sz = dp((6 + (i % 4) * 3)).toFloat()
@@ -1135,7 +1185,7 @@ class MainActivity : Activity() {
                 }
                 signReady = false
                 // 新页面加载：标题回"加载中…"，四位横线与键盘未就绪，恢复加载动画
-                panelTitleText.text = "加载中…"
+                panelTitleText.text = "加载中"
                 panelTitleText.setTextColor(SUB)
                 panelKeyGrid?.visibility = View.GONE
                 panelCodeDisplay.visibility = View.GONE
@@ -1358,15 +1408,20 @@ class MainActivity : Activity() {
             }
         }
         // 输码后结果监听（不进网页也能知道签到结果）：
-        // URL 跳 #/sign/in/detail = 签到成功 → 提取考勤数据弹覆盖页；
-        // 10 秒仍未跳转 = 站点未确认（签到码无效/不在签到时间）→ 提示重输
+        // URL 跳 #/sign/in/detail = 签到成功 → 提取考勤数据弹覆盖页（带彩带）；
+        // 3 秒未跳 → 弹「签到码无效（或网络超时）」弹窗（非 toast），后台继续检测 3 秒缓冲，
+        // 缓冲期内成功则关掉无效弹窗切到签到成功；缓冲结束仍无跳转则维持弹窗等用户「重新输入」
         if (resultWatchActive && !signResultShown) {
             if (curUrl.contains("#/sign/in/detail")) {
                 resultWatchActive = false
                 onSignSucceeded()
-            } else if (System.currentTimeMillis() - resultWatchStartAt > 10000) {
+            } else if (!invalidShown && System.currentTimeMillis() - resultWatchStartAt > 3000) {
+                invalidShown = true
+                invalidShownAt = System.currentTimeMillis()
+                showInvalidOverlay()
+            } else if (invalidShown && System.currentTimeMillis() - invalidShownAt > 3000) {
+                // 缓冲 3 秒结束仍无跳转：停止自动检测，维持无效弹窗，等用户点「重新输入」
                 resultWatchActive = false
-                onSignInvalid()
             }
         }
         evalJs(SignInjector.JS_DETECT_STATE) { raw ->
@@ -1483,7 +1538,7 @@ class MainActivity : Activity() {
                     // 已登录但定位未拿到：等定位，必要时刷新（未登录时不刷新，避免反复加载）
                     val elapsed = System.currentTimeMillis() - signPageFirstSeenAt
                     // 定位中转圈显示在键盘位置（与加载动画同款大转圈），键盘与四位横线暂隐
-                    panelTitleText.text = "定位中…"
+                    panelTitleText.text = "定位中"
                     panelTitleText.setTextColor(SUB)
                     panelKeyGrid?.visibility = View.GONE
                     panelCodeDisplay.visibility = View.GONE
@@ -1781,9 +1836,12 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 签到结果判定与覆盖页
 
-    /** 签到成功：从网页正文提取课程名与考勤统计 → 弹出签到完成覆盖页 */
+    /** 签到成功：从网页正文提取课程名与考勤统计 → 弹出签到完成覆盖页（带彩带） */
     private fun onSignSucceeded() {
         appendLog("sign succeeded: #/sign/in/detail")
+        invalidShown = false                       // 若无效弹窗显示中（缓冲期内成功）→ 先关掉
+        invalidOverlay?.visibility = View.GONE
+        resultWatchActive = false
         // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 3 次）
         fun extract(attempt: Int) {
             evalJs("(function(){try{return document.body.innerText||''}catch(e){return ''}})()") { text ->
@@ -1825,21 +1883,34 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 签到码无效：10 秒未跳 detail，站点未确认（码错/不在签到时间）→ 提示重输，恢复键盘 */
-    private fun onSignInvalid() {
-        appendLog("sign invalid: 10s no detail redirect")
+    /** 签到码无效：3 秒未跳 detail → 弹「签到码无效（或网络超时）」弹窗（非 toast），后台继续缓冲检测 */
+    private fun showInvalidOverlay() {
+        appendLog("sign invalid: 3s no detail redirect, show invalid overlay")
         statusText.text = "签到码无效，请重试"
-        toast("签到码无效，请确认后重输")
-        manualCode = ""
-        updatePanelDisplay()
+        val ov = invalidOverlay ?: return
+        ov.alpha = 0f
+        ov.visibility = View.VISIBLE
+        ov.animate().alpha(1f).setDuration(180).start()
     }
 
-    /** 显示签到完成覆盖页（淡入） */
+    /** 关闭无效弹窗 → 恢复键盘，可重输 */
+    private fun dismissInvalidOverlay() {
+        invalidShown = false
+        invalidOverlay?.visibility = View.GONE
+        resultWatchActive = false
+        lastSubmitAt = 0L
+        manualCode = ""
+        updatePanelDisplay()
+        statusText.text = "签到就绪"
+    }
+
+    /** 显示签到完成覆盖页（淡入 + 成功彩带） */
     private fun showSignResultOverlay() {
         if (signResultShown) return
         signResultShown = true
         prevSigned = true
         signReady = false
+        launchConfetti()   // 成功彩带（盖在覆盖页之上）
         val ov = resultOverlay ?: return
         ov.alpha = 0f
         ov.visibility = View.VISIBLE
@@ -1850,6 +1921,7 @@ class MainActivity : Activity() {
     private fun dismissSignResultOverlay() {
         if (!signResultShown) return
         signResultShown = false
+        stopConfetti()
         resultOverlay?.visibility = View.GONE
         lastSubmitAt = 0L     // 结果窗口失效：后续停在 detail 页不再触发覆盖页
         prevSigned = false    // 允许导航回签到页
@@ -1882,7 +1954,7 @@ class MainActivity : Activity() {
         engine.start(object : MiMoSpeechEngine.Callback {
             override fun onState(text: String) {
                 if (epoch != mimoEpoch || !listening) return   // 旧代际残留，丢弃
-                if (text.contains("监听")) addSpeechInfo("MiMo", "开始持续监听…（每 3 秒切片、最近 10 秒）")
+                if (text.contains("监听")) addSpeechInfo("MIMO", "开始持续监听…（每 3 秒切片、最近 10 秒）")
             }
 
             override fun onResult(text: String) {
@@ -1890,12 +1962,12 @@ class MainActivity : Activity() {
                 mimoSliceCount++
                 val clean = text.trim()
                 if (clean.isEmpty()) {
-                    addSpeechInfo("MiMo", "切片 $mimoSliceCount 识别结果：空")
+                    addSpeechInfo("MIMO", "切片 $mimoSliceCount 识别结果：空")
                     maybeLlmExtract()
                     return
                 }
                 appendLog("mimo slice $mimoSliceCount: ${clean.take(80)}")
-                addSpeechInfo("MiMo", "切片 $mimoSliceCount 转写：$clean")
+                addSpeechInfo("MIMO", "切片 $mimoSliceCount 转写：$clean")
                 heardPool.addLast(clean)
                 while (heardPool.size > 10) heardPool.removeFirst()
                 // 本地快速路径：转写里直接有连续标准数字（阿拉伯/中文数字字）→ 立即注入，省一次 flash 调用
@@ -1911,7 +1983,7 @@ class MainActivity : Activity() {
             override fun onError(message: String) {
                 if (epoch != mimoEpoch || !listening) return   // 旧代际残留，丢弃
                 appendLog("mimo err: $message")
-                addSpeechInfo("MiMo", "错误：$message")
+                addSpeechInfo("MIMO", "错误：$message")
                 // 自动监听模式：Key 无效 / 麦克风失败等致命错误直接停止；
                 // 网络类错误（DNS 解析失败/连接超时/断网）持续自动重试，不限制次数——课堂不能因网络波动漏签
                 val fatal = message.contains("API Key") || message.contains("麦克风") ||
@@ -1978,17 +2050,11 @@ class MainActivity : Activity() {
         if (listening || filling) return
         if (!signReady) return
         if (!hasRecordPermission()) return
-        if (credStore.voiceEngine() != "mimo") {
-            if (System.currentTimeMillis() - lastAutoListenHintAt > 15000) {
-                lastAutoListenHintAt = System.currentTimeMillis()
-                statusText.text = "签到就绪（自动监听需在设置中选 MiMo 引擎）"
-            }
-            return
-        }
+        // 语音识别仅 MIMO 云端引擎（系统识别已移除）：没填 API Key 就禁用语音识别
         if (credStore.mimoApiKey().isNullOrBlank()) {
             if (System.currentTimeMillis() - lastAutoListenHintAt > 15000) {
                 lastAutoListenHintAt = System.currentTimeMillis()
-                statusText.text = "签到就绪（自动监听需在设置中填 MiMo API Key）"
+                statusText.text = "签到就绪（自动监听需在设置中填 MIMO API Key）"
             }
             return
         }
@@ -2000,7 +2066,7 @@ class MainActivity : Activity() {
         stopListeningQuiet()
         val sr = SpeechRecognizer.createSpeechRecognizer(this)
         if (sr == null) {
-            toast("系统语音服务不可用，可在「账号设置」切换 MiMo 云端识别")
+            toast("系统语音服务不可用，可在「账号设置」切换 MIMO 云端识别")
             statusText.text = "语音：系统语音服务不可用"
             return
         }
@@ -2195,7 +2261,7 @@ class MainActivity : Activity() {
             val listener = object : LocationListener {
                 override fun onLocationChanged(loc: Location) {
                     locationText.text = String.format(
-                        java.util.Locale.CHINA, "经纬度：%.6f, %.6f", loc.latitude, loc.longitude
+                        java.util.Locale.CHINA, "经纬度：%.2f, %.2f", loc.latitude, loc.longitude
                     )
                     locationText.visibility = View.VISIBLE
                     try { lm.removeUpdates(this) } catch (e: Exception) {}
@@ -2213,7 +2279,7 @@ class MainActivity : Activity() {
             // 10 秒超时清理：没拿到先显示"定位中…"（键盘位转圈继续兜底）
             handler.postDelayed({
                 try { lm.removeUpdates(listener) } catch (e: Exception) {}
-                if (locationText.text.isEmpty()) locationText.text = "定位中…"
+                if (locationText.text.isEmpty()) locationText.text = "定位中"
             }, 10000)
         } catch (e: Exception) {
             locationText.text = ""

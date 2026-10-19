@@ -66,10 +66,10 @@ class SettingsActivity : Activity() {
     private fun refreshScheduleStatus() {
         val ics = credStore.scheduleCacheIcs()
         if (ics.isNullOrBlank()) {
-            scheduleStatusText.text = "尚未导入课表（选择 .ics 文件后自动生效）"
+            scheduleStatusText.text = "尚未导入课表"
         } else {
             val count = ics.split("BEGIN:VEVENT").size - 1
-            scheduleStatusText.text = "已导入课表：$count 门课程（离线可用）"
+            scheduleStatusText.text = "已导入课表：$count 门课程"
         }
     }
 
@@ -103,9 +103,36 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private val idSystem = View.generateViewId()
     private val idMimo = View.generateViewId()
     private val REQ_ICS = 9001
+
+    /** 带圆形感叹号提示的标签行：点击感叹号弹出说明对话框 */
+    private fun helpRow(label: String, help: String): LinearLayout {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(SUB)
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        row.addView(TextView(this).apply {
+            text = " ⓘ"
+            textSize = 13f
+            setTextColor(ACCENT)
+            setPadding(dp(2), dp(0), dp(0), dp(0))
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@SettingsActivity)
+                    .setTitle(label)
+                    .setMessage(help)
+                    .setPositiveButton("知道了", null)
+                    .show()
+            }
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        return row
+    }
 
     companion object {
         // 注意：ACCENT 为实例属性（依赖 palette），见下方
@@ -234,7 +261,7 @@ class SettingsActivity : Activity() {
         backBtn.setOnClickListener { finish() }
         titleRow.addView(backBtn, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
         val title = TextView(this).apply {
-            text = "账号与语音设置"
+            text = "设置"
             textSize = 18f
             setTextColor(TEXT)
             gravity = Gravity.CENTER
@@ -277,7 +304,7 @@ class SettingsActivity : Activity() {
         }
         accountBlock.addView(showPw)
         autoLoginCheck = CheckBox(this).apply {
-            text = "自动登录（登录过期自动重登）"
+            text = "自动登录"
             textSize = 13f
             setTextColor(TEXT)
             isChecked = credStore.autoLogin()
@@ -289,31 +316,25 @@ class SettingsActivity : Activity() {
 
         // ========== 语音识别块 ==========
         val voiceBlock = block("语音识别")
+        // 语音识别仅 MIMO 云端引擎（系统识别已移除）：默认 MIMO，没填 Key 禁用语音识别
         voiceBlock.addView(label("语音识别引擎"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
         engineGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val rbSystem = RadioButton(this).apply {
-            text = "系统识别（手机自带引擎，零配置）"
-            textSize = 13f
-            setTextColor(TEXT)
-            id = idSystem
-        }
         val rbMimo = RadioButton(this).apply {
-            text = "小米 MiMo 云端（需 API Key，任何手机可用）"
+            text = "Xiaomi-MIMO"
             textSize = 13f
             setTextColor(TEXT)
             id = idMimo
         }
-        engineGroup.addView(rbSystem)
         engineGroup.addView(rbMimo)
-        if (credStore.voiceEngine() == "mimo") engineGroup.check(rbMimo.id) else engineGroup.check(rbSystem.id)
+        engineGroup.check(rbMimo.id)
         engineGroup.setOnCheckedChangeListener { _, checkedId ->
             mimoBox.visibility = if (checkedId == rbMimo.id) View.VISIBLE else View.GONE
         }
         voiceBlock.addView(engineGroup)
         autoListenCheck = CheckBox(this).apply {
-            text = "自动语音监听（登录后自动开始，用 MiMo 持续切片识别签到码）"
+            text = "自动语音监听"
             textSize = 13f
             setTextColor(TEXT)
             isChecked = credStore.autoListen()
@@ -322,7 +343,7 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
         showSpeechInfoCheck = CheckBox(this).apply {
-            text = "显示主页识别窗口（语音识别日志区，默认隐藏）"
+            text = "显示主页识别日志（开发者选项）"
             textSize = 13f
             setTextColor(TEXT)
             isChecked = credStore.showSpeechInfo()
@@ -334,9 +355,9 @@ class SettingsActivity : Activity() {
         // MiMo 配置区（选 MiMo 引擎时显示）
         mimoBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = if (credStore.voiceEngine() == "mimo") View.VISIBLE else View.GONE
+            visibility = View.VISIBLE   // 语音识别仅 MIMO：配置区恒显示
         }
-        mimoBox.addView(label("MiMo API Key（到 mimo.mi.com 注册获取）"), LinearLayout.LayoutParams(
+        mimoBox.addView(helpRow("MIMO API Key", "请到 mimo.mi.com 控制台注册获取 API Key\n在控制台左下角填入邀请码 ZPAF4Y 领取 10 元免费额度"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
         mimoKeyInput = edit("sk-xxx", password = true).apply {
@@ -359,17 +380,17 @@ class SettingsActivity : Activity() {
             }
         }
         mimoBox.addView(showKey)
-        mimoBox.addView(label("接口地址（保持默认即可）"), LinearLayout.LayoutParams(
+        mimoBox.addView(label("接口地址"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
-        mimoUrlInput = edit("接口地址（保持默认即可）").apply {
+        mimoUrlInput = edit("接口地址").apply {
             setText(credStore.mimoBaseUrl())
             textSize = 13f
         }
         mimoBox.addView(mimoUrlInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
-        mimoBox.addView(label("ASR 转写模型（纯语音转写，默认 mimo-v2.5-asr）"), LinearLayout.LayoutParams(
+        mimoBox.addView(label("ASR 转写模型"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
         mimoAsrInput = edit("ASR 转写模型").apply {
@@ -379,18 +400,14 @@ class SettingsActivity : Activity() {
         mimoBox.addView(mimoAsrInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
-        mimoBox.addView(label("综合判断模型（把累积转写文本提取成签到码，默认 mimo-v2.6-flash）"), LinearLayout.LayoutParams(
+        mimoBox.addView(label("LLM 判断模型"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
-        mimoModelInput = edit("综合判断模型").apply {
+        mimoModelInput = edit("LLM 判断模型").apply {
             setText(credStore.mimoModel())
             textSize = 13f
         }
         mimoBox.addView(mimoModelInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        mimoBox.addView(label("提示：持续录音每 3 秒切一片上传（每片最近 10 秒、重叠 7 秒，所有切片都上传）；" +
-                "ASR 转写每片文本，flash 综合判断 4 位签到码，识别到立即自动输入。"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
         voiceBlock.addView(mimoBox)
@@ -407,9 +424,27 @@ class SettingsActivity : Activity() {
         scheduleBlock.addView(scheduleStatusText, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(2) })
-        val importBtn = button("导入课表（ICS 文件）", LIGHT, ACCENT, big = true)
+        val importRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val importBtn = button("导入课表（.ICS）", LIGHT, ACCENT, big = true)
         importBtn.setOnClickListener { pickIcsFile() }
-        scheduleBlock.addView(importBtn, LinearLayout.LayoutParams(
+        importRow.addView(importBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        importRow.addView(TextView(this).apply {
+            text = " ⓘ"
+            textSize = 16f
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(0), dp(0), dp(0))
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@SettingsActivity)
+                    .setTitle("导入课表")
+                    .setMessage("请到杭电助手 - 课表 - 订阅课表，复制链接到浏览器下载课表 ICS 文件")
+                    .setPositiveButton("知道了", null)
+                    .show()
+            }
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        scheduleBlock.addView(importRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
         refreshScheduleStatus()
@@ -419,7 +454,7 @@ class SettingsActivity : Activity() {
 
         // ========== 界面风格块 ==========
         val styleBlock = block("界面风格")
-        styleBlock.addView(label("选择界面风格（深浅色跟随系统）"), LinearLayout.LayoutParams(
+        styleBlock.addView(label("选择界面风格"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(6) })
         val styleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -442,7 +477,7 @@ class SettingsActivity : Activity() {
                     bb.background = roundedBg(if (sel2) ACCENT else LIGHT, 10)
                     bb.setTextColor(if (sel2) 0xFFFFFFFF.toInt() else TEXT)
                 }
-                toast("已切换为「${ThemePalette.styleLabel(s)}」风格，返回主界面后生效")
+                toast("已切换，返回主界面后生效")
             }
             styleBtns.add(b)
             val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -464,10 +499,10 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(2) })
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val loginBtn = button("保存并立即登录", LIGHT, ACCENT)
+        val loginBtn = button("保存并登录", LIGHT, ACCENT)
         loginBtn.setOnClickListener {
             if (save(close = false)) {
-                toast("已保存，返回主界面后自动登录")
+                toast("已保存")
                 finish()
             }
         }
@@ -489,11 +524,8 @@ class SettingsActivity : Activity() {
 
         // ========== 调试块 ==========
         val debugBlock = block("调试")
-        debugBlock.addView(label("开启后：每次页面加载完成、签到提交后会自动抓取页面内容写入下方日志（含 URL 与正文），可据此确认「签到成功」与「签到码不存在」的真实文案"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(6) })
         val debugCheck = CheckBox(this).apply {
-            text = "调试日志（抓取页面内容）"
+            text = "调试日志"
             textSize = 13f
             setTextColor(SUB)
             isChecked = credStore.debugEnabled()
@@ -516,7 +548,7 @@ class SettingsActivity : Activity() {
         ).apply { topMargin = dp(4) })
 
         // 导出调试记录：日志全文 + 全部页面抓取详情（作为覆盖界面设计依据）
-        val exportBtn = button("导出调试记录（日志 + 页面抓取全文）", LIGHT, ACCENT)
+        val exportBtn = button("导出调试记录", LIGHT, ACCENT)
         exportBtn.setOnClickListener { exportDebug() }
         debugBlock.addView(exportBtn, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -548,8 +580,7 @@ class SettingsActivity : Activity() {
             return false
         }
         credStore.save(u, p, autoLoginCheck.isChecked)
-        val engine = if (engineGroup.checkedRadioButtonId == idMimo) "mimo" else "system"
-        credStore.setVoiceEngine(engine)
+        credStore.setVoiceEngine("mimo")   // 语音识别仅 MIMO 云端引擎（系统识别已移除）
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
@@ -569,7 +600,7 @@ class SettingsActivity : Activity() {
     private fun exportDebug() {
         try {
             val sb = StringBuilder()
-            sb.append("上课啦签到 调试导出 ")
+            sb.append("上课啦 调试导出 ")
                 .append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()))
                 .append("\n")
             sb.append("========================================\n")
@@ -610,7 +641,7 @@ class SettingsActivity : Activity() {
             // 2) 调起系统分享（微信/备忘录等）
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "上课啦签到调试导出")
+                putExtra(Intent.EXTRA_SUBJECT, "上课啦调试导出")
                 putExtra(Intent.EXTRA_TEXT, content)
             }
             startActivity(Intent.createChooser(send, "导出调试记录"))

@@ -81,8 +81,8 @@ class CredentialStore(context: Context) {
 
     // ------------------------------------------------------------------ 语音引擎配置
 
-    /** 语音识别引擎：system = 系统自带（默认），mimo = 小米 MiMo 云端 */
-    fun voiceEngine(): String = prefs.getString("voice_engine", "system") ?: "system"
+    /** 语音识别引擎：仅 mimo（小米 MIMO 云端，系统识别已移除） */
+    fun voiceEngine(): String = prefs.getString("voice_engine", "mimo") ?: "mimo"
 
     fun setVoiceEngine(engine: String) {
         prefs.edit().putString("voice_engine", engine).apply()
