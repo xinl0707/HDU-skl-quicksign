@@ -119,8 +119,8 @@ class CredentialStore(context: Context) {
         prefs.edit().putString("mimo_asr_model", model.trim().ifEmpty { "mimo-v2.5-asr" }).apply()
     }
 
-    /** 自动语音监听：默认关闭（用户要求后台不要持续监听声音）；开启后登录进入签到页自动开始持续录音 + 切片识别（仅 MiMo 引擎） */
-    fun autoListen(): Boolean = prefs.getBoolean("auto_listen", false)
+    /** 自动语音监听：默认开启（进入签到页自动开始持续录音 + 切片识别，仅 MiMo 引擎） */
+    fun autoListen(): Boolean = prefs.getBoolean("auto_listen", true)
 
     fun setAutoListen(enabled: Boolean) {
         prefs.edit().putBoolean("auto_listen", enabled).apply()
