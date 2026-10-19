@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色启动主题：跟随系统夜间模式，窗口背景直接用应用深色底色，启动不再闪白 -->
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#141519</item>
+        <item name="android:statusBarColor">#141519</item>
+        <item name="android:navigationBarColor">#141519</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

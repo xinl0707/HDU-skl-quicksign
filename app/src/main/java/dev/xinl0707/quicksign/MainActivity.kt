@@ -1,0 +1,1863 @@
+package dev.xinl0707.quicksign
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.Dialog
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.text.format.DateFormat
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.Window
+import android.view.WindowManager
+import android.webkit.GeolocationPermissions
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.GridLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
+import org.json.JSONObject
+import org.json.JSONTokener
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * 上课啦快捷签到 App 主界面。
+ *
+ * 结构：全屏 WebView（承载签到站点）+ 状态栏 + 底部控制栏（账号设置 / 手动键盘 / 语音签到）
+ * 核心能力：
+ *  - 账号密码 Keystore 加密保存，自动登录（含验证码时暂停由用户手动完成）
+ *  - 登录过期自动重登（轮询检测登录页，自动填表提交）
+ *  - 按域名切换 User-Agent：进 SSO 统一认证（sso.hdu.edu.cn）用桌面 UA 显示电脑端登录，
+ *    回签到站点恢复移动 UA
+ *  - 语音识别 4 位签到码自动输入：双引擎（系统 SpeechRecognizer / 小米 MiMo 云端）
+ *  - 手动键盘全屏弹层兜底（打开时先收起网页自带键盘，不叠加遮挡）
+ */
+class MainActivity : Activity() {
+
+    companion object {
+        private const val REQ_PERMS = 1001
+        private const val POLL_INTERVAL = 700L
+    }
+
+    // 深色模式跟随系统；配色按「界面风格 × 深浅」从 ThemePalette 取（延迟初始化，属性初始化时机早于系统资源绑定）
+    private val isNight: Boolean by lazy {
+        (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+    private fun themeStyle(): String =
+        getSharedPreferences("settings", MODE_PRIVATE)
+            .getString(ThemePalette.KEY_STYLE, ThemePalette.STYLE_DEFAULT) ?: ThemePalette.STYLE_DEFAULT
+
+    // 当前已应用的主题风格（onResume 对比设置值，变化则 recreate）
+    private var lastAppliedStyle: String = ThemePalette.STYLE_DEFAULT
+
+    private val palette: ThemePalette.Palette by lazy { ThemePalette.palette(themeStyle(), isNight) }
+    private val ACCENT: Int get() = palette.accent
+    private val BG: Int get() = palette.bg
+    private val CARD: Int get() = palette.card
+    private val TEXT: Int get() = palette.text
+    private val SUB: Int get() = palette.sub
+    private val LIGHT: Int get() = palette.light
+    private val KEY_BG: Int get() = palette.keyBg
+    private val INFO_BG: Int get() = palette.infoBg
+    private val INFO_LIST_BG: Int get() = palette.infoListBg
+
+    private lateinit var webView: WebView
+    private lateinit var credStore: CredentialStore
+    private lateinit var statusText: TextView
+
+    // 顶部栏：返回面板按钮（网页显示时可用）+ 设置入口（右上角圆形按钮）
+    private lateinit var backPanelBtn: Button
+
+    // 原生签到面板（默认显示，网页隐藏后台加载；需要时点按钮展示网页）
+    private lateinit var signPanel: LinearLayout
+    private var signPanelWrap: LinearLayout? = null   // 面板外层容器（隐藏它网页才真正全屏）
+    private lateinit var panelCodeDisplay: TextView
+    private lateinit var toggleWebBtn: Button
+    private var signPanelShown = false
+
+    // 当前课程显示（杭电助手订阅课表 ICS 解析）
+    private lateinit var courseText: TextView
+    private lateinit var courseDetailText: TextView
+    private lateinit var clockText: TextView
+    private lateinit var locationText: TextView   // 定位正常时显示当前经纬度
+    private var lastLocReqAt = 0L                 // 原生定位请求节流
+    // 面板标题：加载中显示"加载中…"，就绪后显示"签到就绪"
+    private lateinit var panelTitleText: TextView
+    private var scheduleCourses: List<ScheduleParser.Course> = emptyList()
+    private var scheduleFetchedAt = 0L
+    private var lastScheduleTickAt = 0L
+
+    // 大数字提示浮层（输码成功弹窗，非 toast）
+    private lateinit var rootFrame: FrameLayout
+    private lateinit var bigOverlay: FrameLayout
+    private lateinit var bigCodeText: TextView
+    private var bigOverlayShown = false
+    // 签到键盘：签到页加载完成（signReady）前隐藏，显示"加载中"；就绪后才展示
+    private var panelKeyGrid: GridLayout? = null
+    // 加载动画：键盘未就绪（signReady=false）时显示转圈，就绪后隐藏
+    private var loadingBar: ProgressBar? = null
+    // 定位中加载动画：签到页就绪但定位未拿到时，状态栏显示小转圈
+    private var locLoadingBar: ProgressBar? = null
+
+    // 识别信息栏（独立面板，不覆盖网页）：展示系统 ASR / MiMo 识别内容与综合判断
+    private lateinit var speechInfoRow: TextView
+    private lateinit var speechInfoScroll: ScrollView
+    private lateinit var speechInfoList: TextView
+    private val speechLog = mutableListOf<String>()
+    private var speechLogExpanded = false
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var pollRunning = false
+    private var filling = false
+    private var fillGen = 0
+    private var signReady = false
+    private var prevSigned = false
+    private var signPageFirstSeenAt = 0L
+    private var lastReloadAt = 0L
+    private var autoLoginCooldownUntil = 0L
+    private var ssoLoadCount = 0          // 连续 SSO 域页面加载计数（防重定向死循环）
+    private var autoLoginRetries = 0      // 自动登录提交重试次数（超限转手动）
+    private var autoLoginSubmitted = false // 登录页已自动提交过一次，避免反复提交干扰验证码
+    private var autoLoginSubmittedAt = 0L
+
+    private var pendingGeoOrigin: String? = null
+    private var pendingGeoCallback: GeolocationPermissions.Callback? = null
+
+    // 登录态探测：签到页不触发登录检查，App 原生层直接请求 /api/userinfo，
+    // 401 时取后端返回的 SSO 地址跳转（走桌面端登录）；200 视为已登录
+    private var loginOk = false
+    private var loginProbeCooldownUntil = 0L
+    private var probeFailCount = 0
+
+    private var speech: SpeechRecognizer? = null
+    private var mimoEngine: MiMoSpeechEngine? = null
+    private var listening = false
+    private var listenAttempts = 0
+    private var heardText = ""
+    private var mimoRestartCount = 0 // 自动监听下瞬时错误自动重启次数
+    private var mimoSliceCount = 0  // MiMo 切片序号（识别日志细化）
+    private var mimoEpoch = 0L      // 监听代际：每次启动监听 +1，旧代际的回调一律丢弃（防残留识别）
+    private var lastAutoListenHintAt = 0L // 自动监听提示去重
+    // 两步架构（ASR 转写 + flash 综合判断）：转写累积池（最近 10 片 ≈ 30 秒）+ 判断状态
+    private val heardPool = ArrayDeque<String>()
+    private var llmExtractBusy = false // flash 综合判断进行中标志，避免并发重复调用
+    private var llmExtractFirst = true // 首次综合判断用"首次提示词"，之后用"累积提示词"
+
+    private var manualCode = ""
+    private var pendingPanelCode = "" // 网页未就绪时输满的码，就绪后自动补输
+    private var lastFilledCode = ""
+    private var clearedOnceForPage = false // 每次页面加载后只清一次网页密码框残留（页面加载后才允许执行 JS）
+
+    private var lastToastKey = ""
+    private var lastToastAt = 0L
+
+    // 桌面 UA 用于 SSO 电脑端登录；站点本身是移动端应用，回签到域恢复移动 UA（延迟初始化）
+    private val defaultUA: String by lazy { WebSettings.getDefaultUserAgent(this) }
+    private val desktopUA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+    // ------------------------------------------------------------------ 生命周期
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 崩溃自上报：任意未捕获异常写入本地，下次启动直接显示，便于定位（无需连电脑）
+        Thread.setDefaultUncaughtExceptionHandler { _, t ->
+            try {
+                getSharedPreferences("crash", MODE_PRIVATE).edit()
+                    .putString("last_crash", "$t\n${t.stackTraceToString()}")
+                    .commit()
+                java.io.File(filesDir, "startup.log").appendText("UNCAUGHT: $t\n${t.stackTraceToString()}\n")
+            } catch (e: Exception) {}
+        }
+        // 上次崩溃过 → 直接显示崩溃内容，不执行正常启动（用户反馈后我来修）
+        val lastCrash = getSharedPreferences("crash", MODE_PRIVATE).getString("last_crash", null)
+        if (lastCrash != null) {
+            trace("showing last crash")
+            val crashText = TextView(this).apply {
+                text = "上次启动崩溃，请把下面内容发给开发者：\n\n$lastCrash"
+                setTextColor(0xFF111111.toInt())
+                setTextSize(11f)
+                setPadding(24, 24, 24, 24)
+                setTextIsSelectable(true)
+            }
+            val retryBtn = Button(this).apply {
+                text = "清除记录并重试"
+                setOnClickListener {
+                    getSharedPreferences("crash", MODE_PRIVATE).edit().clear().commit()
+                    finish()
+                    startActivity(Intent(this@MainActivity, MainActivity::class.java))
+                }
+            }
+            val crashView = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(16, 16, 16, 16)
+                addView(crashText, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                ))
+                addView(retryBtn, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+            }
+            setContentView(crashView)
+            return
+        }
+        trace("onCreate start")
+        try {
+            credStore = CredentialStore(this)
+            lastAppliedStyle = themeStyle()
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            trace("before buildUi")
+            buildUi()
+            trace("after buildUi")
+            setupWebView()
+            trace("after setupWebView")
+            requestNeededPermissions()
+            // 打开 App 默认显示原生签到面板（网页隐藏后台加载/登录），可立即输入
+            showSignPanel()
+            trace("after showSignPanel")
+            webView.loadUrl(SignInjector.HOME_URL)
+            trace("after loadUrl")
+            if (!credStore.hasCredentials()) {
+                statusText.text = "请在右上角「设置」中保存学号密码，将自动登录"
+            }
+        } catch (t: Throwable) {
+            // 崩溃兜底：写入文件并直接显示崩溃信息，便于用户反馈定位
+            trace("CRASH: $t")
+            trace(t.stackTraceToString())
+            try {
+                setContentView(TextView(this).apply {
+                    text = "启动崩溃（请把此内容发给开发者）：\n\n$t\n\n${t.stackTraceToString()}"
+                    setTextColor(0xFF111111.toInt())
+                    setTextSize(11f)
+                    setPadding(24, 24, 24, 24)
+                    setTextIsSelectable(true)
+                })
+            } catch (e: Exception) {}
+        }
+    }
+
+    /** 启动埋点：逐步写文件，崩溃后可从文件最后一行定位崩在哪一步 */
+    private fun trace(t: String) {
+        try {
+            val f = java.io.File(filesDir, "startup.log")
+            java.io.FileOutputStream(f, true).use { it.write("$t\n".toByteArray()) }
+        } catch (e: Exception) {}
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从设置页/课表/考勤等界面返回后，立即允许自动登录与登录态探测
+        autoLoginCooldownUntil = 0
+        loginProbeCooldownUntil = 0
+        // 界面风格在设置页被切换时，重建界面让新主题生效（WebView 会自动重跑登录流程）
+        val nowStyle = themeStyle()
+        DebugLog.append("onResume: style=$nowStyle last=$lastAppliedStyle")
+        if (nowStyle != lastAppliedStyle) {
+            lastAppliedStyle = nowStyle
+            recreate()
+            return
+        }
+        // 回到首页键盘面板时才恢复自动监听（其余界面不监听）
+        if (signPanelShown) maybeAutoListen()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // 离开主界面（设置页/课表/考勤/后台）：立即停止全部监听，任何非键盘界面都不监听
+        stopListeningQuiet()
+    }
+
+    override fun onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+            return
+        }
+        super.onBackPressed()
+    }
+
+    override fun onDestroy() {
+        pollRunning = false
+        stopListeningQuiet()
+        webView.destroy()
+        super.onDestroy()
+    }
+
+    // ------------------------------------------------------------------ 界面
+
+    private fun dp(v: Number): Int =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
+
+    /** 圆角矩形背景 */
+    private fun roundedBg(color: Int, radius: Int): android.graphics.drawable.GradientDrawable =
+        android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(radius).toFloat()
+            setColor(color)
+        }
+
+    private fun button(label: String, bg: Int, fg: Int, big: Boolean = false, radius: Int = 12): Button {
+        val b = Button(this)
+        b.text = label
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (big) 16f else 13f)
+        b.background = roundedBg(bg, radius)
+        b.setTextColor(fg)
+        b.isAllCaps = false
+        b.gravity = Gravity.CENTER
+        b.minHeight = dp(if (big) 48f else 42f)
+        b.setPadding(dp(10), 0, dp(10), 0)
+        return b
+    }
+
+    private fun buildUi() {
+        trace("buildUi start")
+        // 最外层用 FrameLayout：主内容 + 大数字浮层（浮层在后，天然覆盖全屏）
+        val rootFrame = FrameLayout(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            fitsSystemWindows = true
+            setBackgroundColor(BG)
+        }
+        this.rootFrame = rootFrame
+        // 状态栏/导航栏配色跟随当前主题风格（edge-to-edge 下内容已避开系统栏）
+        applySystemBars()
+
+        // 顶部栏：标题 + 返回面板（网页显示时可见）+ 设置入口（右上角圆形按钮）
+        backPanelBtn = button("返回签到", LIGHT, ACCENT)
+        backPanelBtn.visibility = View.GONE
+        backPanelBtn.setOnClickListener { showSignPanel() }
+        val settingsBtn = TextView(this).apply {
+            text = "设"
+            textSize = 14f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            background = roundedBg(ACCENT, 20)
+            isClickable = true
+            setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
+        }
+        val titleBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(12), dp(4))
+        }
+        titleBar.addView(TextView(this).apply {
+            text = "上课啦签到"
+            textSize = 18f
+            setTextColor(TEXT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        titleBar.addView(backPanelBtn, LinearLayout.LayoutParams(dp(88), dp(38)).apply { rightMargin = dp(8) })
+        titleBar.addView(settingsBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
+        root.addView(titleBar)
+        trace("buildUi titleBar ok")
+
+        // 原生签到面板：默认显示（网页隐藏后台加载），内置数字键盘直接输码；
+        // 输满 4 位自动注入并切回网页显示结果；需要看网页时点「查看网页」
+        signPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedBg(CARD, 16)
+            visibility = View.VISIBLE
+        }
+        panelTitleText = TextView(this).apply {
+            text = "加载中…"
+            textSize = 22f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            setPadding(dp(0), dp(20), dp(0), dp(2))
+        }
+        signPanel.addView(panelTitleText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // 当前时间（精确到秒，每秒刷新）
+        clockText = TextView(this).apply {
+            textSize = 13f
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+            setPadding(dp(0), dp(0), dp(0), dp(2))
+        }
+        signPanel.addView(clockText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        // 当前经纬度（定位正常时显示，默认隐藏）
+        locationText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            setPadding(dp(0), dp(0), dp(0), dp(4))
+            visibility = View.GONE
+        }
+        signPanel.addView(locationText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        // 当前课程卡片（依据杭电助手订阅课表动态显示；下课后 5 分钟内仍显示该课，防下课点名）
+        courseText = TextView(this).apply {
+            text = "当前无课"
+            textSize = 16f
+            setTextColor(TEXT)
+            gravity = Gravity.CENTER
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(0), dp(8), dp(0), dp(2))
+        }
+        signPanel.addView(courseText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        courseDetailText = TextView(this).apply {
+            text = ""
+            textSize = 12f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            setPadding(dp(0), dp(0), dp(0), dp(10))
+        }
+        signPanel.addView(courseDetailText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        panelCodeDisplay = TextView(this).apply {
+            textSize = 40f
+            setTextColor(TEXT)
+            gravity = Gravity.CENTER
+            includeFontPadding = false   // 去掉字体上下内边距，数字与横线更贴近、视觉更居中
+            letterSpacing = 0.2f
+            setPadding(dp(0), dp(8), dp(0), dp(8))
+            text = "____"
+            // 签到界面加载完成（signReady）前隐藏四位横线，配合键盘区域的加载动画
+            visibility = View.GONE
+        }
+        signPanel.addView(panelCodeDisplay, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        // 键盘容器：加载动画与键盘同位置——签到页未加载完成（signReady=false）时在键盘位置显示转圈动画；
+        // 定位等待时也用同一位置显示"定位中"转圈
+        val keyWrap = FrameLayout(this)
+        loadingBar = ProgressBar(this).apply {
+            visibility = View.VISIBLE
+        }
+        keyWrap.addView(loadingBar, FrameLayout.LayoutParams(
+            dp(100), dp(100), Gravity.CENTER
+        ))
+        locLoadingBar = ProgressBar(this).apply {
+            visibility = View.GONE
+        }
+        keyWrap.addView(locLoadingBar, FrameLayout.LayoutParams(
+            dp(100), dp(100), Gravity.CENTER
+        ))
+        panelKeyGrid = GridLayout(this).apply {
+            columnCount = 3
+            rowCount = 4
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+            // 签到界面加载完成（signReady）前不显示键盘：避免未就绪时误输码/误触发
+            visibility = View.GONE
+        }
+        // 数字键盘：清除 + 0 + 退格（0 居中，退格/清除对调：清除在左、退格在右），输满 4 位再注入
+        val panelDigits = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "del")
+        for (d in panelDigits) {
+            val isDigit = d.length == 1 && d[0].isDigit()
+            val b = button(
+                when (d) {
+                    "del" -> "退格"
+                    "clear" -> "清除"
+                    else -> d
+                },
+                if (d == "del" || d == "clear") LIGHT else KEY_BG,
+                TEXT, big = true
+            )
+            // 数字键字号加大，退格/清除适中
+            b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, if (isDigit) 24f else 18f)
+            b.setOnClickListener { onPanelKey(d) }
+            val lp = GridLayout.LayoutParams()
+            lp.width = 0
+            lp.height = dp(58)
+            lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1, 1f)
+            lp.setMargins(dp(6), dp(6), dp(6), dp(6))
+            panelKeyGrid!!.addView(b, lp)
+        }
+        keyWrap.addView(panelKeyGrid, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT
+        ))
+        signPanel.addView(keyWrap, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        toggleWebBtn = button("查看网页", LIGHT, ACCENT, big = true)
+        toggleWebBtn.setOnClickListener { toggleWebView() }
+        signPanel.addView(toggleWebBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { leftMargin = dp(20); rightMargin = dp(20); topMargin = dp(4); bottomMargin = dp(6) })
+
+        val signPanelWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(0), dp(10), dp(10))
+            addView(signPanel, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            ))
+        }
+        this.signPanelWrap = signPanelWrap
+        root.addView(signPanelWrap, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        trace("buildUi signPanel ok")
+
+        // WebView（默认隐藏，后台加载；登录/查看结果时显示）
+        webView = WebView(this)
+        webView.visibility = View.GONE
+        root.addView(webView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        trace("buildUi webView ok")
+
+        // 状态栏（圆角卡片）：签到页未就绪时加载动画显示在键盘位置，这里只显示状态文字
+        statusText = TextView(this).apply {
+            textSize = 13f
+            setTextColor(SUB)
+            text = "签到界面加载中…"
+        }
+        val statusBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = roundedBg(CARD, 10)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            addView(statusText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val statusWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(0), dp(10), dp(4))
+            addView(statusBar)
+        }
+        root.addView(statusWrap)
+        trace("buildUi statusBar ok")
+
+        // 识别信息栏：一行实时显示最新识别内容（系统/MiMo/综合），点按展开全部记录；不遮挡网页。
+        // 默认隐藏（设置里可开启"显示主页识别窗口"）
+        val showSpeechInfo = credStore.showSpeechInfo()
+        speechInfoRow = TextView(this).apply {
+            textSize = 11f
+            setTextColor(ACCENT)
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            background = roundedBg(INFO_BG, 10)
+            text = "识别内容：暂无 · 点按展开"
+        }
+        val infoWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(0), dp(10), dp(6))
+            visibility = if (showSpeechInfo) View.VISIBLE else View.GONE
+            addView(speechInfoRow)
+        }
+        root.addView(infoWrap)
+        speechInfoList = TextView(this).apply {
+            textSize = 11f
+            setTextColor(SUB)
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setTextIsSelectable(true)
+            background = roundedBg(INFO_LIST_BG, 10)
+        }
+        speechInfoScroll = ScrollView(this).apply {
+            visibility = View.GONE
+            addView(speechInfoList, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        val infoScrollWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(0), dp(10), dp(6))
+            visibility = if (showSpeechInfo) View.VISIBLE else View.GONE
+            addView(speechInfoScroll, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(140)
+            ))
+        }
+        root.addView(infoScrollWrap)
+        speechInfoRow.setOnClickListener {
+            speechLogExpanded = !speechLogExpanded
+            speechInfoScroll.visibility = if (speechLogExpanded) View.VISIBLE else View.GONE
+            updateSpeechInfoRow()
+        }
+        trace("buildUi infoBar ok")
+
+        // 大数字提示浮层：输码成功（手动/语音）时全屏弹出大号数字，动画切网页（非 toast）
+        bigOverlay = FrameLayout(this)
+        bigOverlay.visibility = View.GONE
+        bigOverlay.setBackgroundColor(0x66000000.toInt())   // 半透明遮罩
+        val bigCard = LinearLayout(this)
+        bigCard.orientation = LinearLayout.VERTICAL
+        bigCard.gravity = Gravity.CENTER
+        bigCard.background = roundedBg(CARD, 26)
+        bigCard.setPadding(dp(48), dp(32), dp(48), dp(32))
+        bigCodeText = TextView(this)
+        // 固定大字号 + 强制单行：80sp 下 4 位数字一行放下，清晰醒目
+        bigCodeText.textSize = 80f
+        bigCodeText.maxLines = 1
+        bigCodeText.setTextColor(ACCENT)
+        bigCodeText.gravity = Gravity.CENTER
+        bigCodeText.letterSpacing = 0.1f
+        bigCodeText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        bigCard.addView(bigCodeText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val hint = TextView(this)
+        hint.text = "签到码已提交"
+        hint.textSize = 15f
+        hint.setTextColor(SUB)
+        hint.gravity = Gravity.CENTER
+        hint.setPadding(dp(0), dp(14), dp(0), dp(0))
+        bigCard.addView(hint, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        bigOverlay.addView(bigCard, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        // 浮层加入最外层 FrameLayout（在主内容之上，全屏覆盖）
+        rootFrame.addView(root, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        rootFrame.addView(bigOverlay, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        buildConfettiLayer()
+        trace("buildUi bigOverlay ok")
+
+        setContentView(rootFrame)
+        // 秒级时钟：签到面板顶部显示当前时间（精确到秒）
+        handler.post(object : Runnable {
+            override fun run() {
+                if (::clockText.isInitialized) {
+                    clockText.text = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.CHINA)
+                        .format(java.util.Date())
+                }
+                handler.postDelayed(this, 1000)
+            }
+        })
+        trace("buildUi done")
+    }
+
+    // ------------------------------------------------------------------ 原生签到面板
+
+    /** 显示原生签到面板（网页隐藏，后台继续加载/提交）；
+     * 注意：启动时 WebView 尚未加载页面，绝不能在这里执行 JS（部分系统 WebView 会 native 崩溃），
+     * 网页残留清除移到进入签到页时（signReady 首次 true）执行 */
+    private fun showSignPanel() {
+        if (signPanelShown) return
+        signPanelShown = true
+        webView.visibility = View.GONE
+        signPanelWrap?.visibility = View.VISIBLE
+        signPanel.visibility = View.VISIBLE
+        backPanelBtn.visibility = View.GONE
+        toggleWebBtn.text = "查看网页"
+        manualCode = ""
+        updatePanelDisplay()
+        appendLog("sign panel shown")
+        // 回到键盘面板时，后台网页自动跳回签到页（否则停留在课表/考勤等页面，面板一直显示加载中）。
+        // 若正在 SSO 登录页则打断登录流程，不动
+        val cur = webView.url ?: ""
+        val host = try { Uri.parse(cur).host?.lowercase() ?: "" } catch (e: Exception) { "" }
+        val isSso = host.contains("sso") || host.contains("cas")
+        if (!isSso && !cur.contains("#/sign/in")) {
+            webView.loadUrl(SignInjector.HOME_URL)
+        }
+    }
+
+    /** 状态栏/导航栏配色跟随主题风格；浅色模式用深色状态栏图标 */
+    private fun applySystemBars() {
+        try {
+            window.statusBarColor = BG
+            window.navigationBarColor = BG
+            val flags = if (!isNight) {
+                window.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            } else {
+                window.decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+            }
+            window.decorView.systemUiVisibility = flags
+        } catch (e: Exception) {}
+    }
+
+    /** 「查看网页」与「返回签到页」切换 */
+    private fun toggleWebView() {
+        if (signPanelShown) showWebOnly() else showSignPanel()
+    }
+
+    /** 大数字提示浮层：输入瞬间全屏弹出大号签到码 + 彩带庆祝；持续显示，网页确认输入完成后由 dismissBigCodeOverlay 收尾并跳转网页 */
+    private fun showBigCodeOverlay(code: String) {
+        bigCodeText.text = code
+        bigOverlayShown = true
+        bigOverlay.visibility = View.VISIBLE
+        bigOverlay.alpha = 0f
+        bigOverlay.scaleX = 0.92f
+        bigOverlay.scaleY = 0.92f
+        bigOverlay.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180).start()
+        launchConfetti()   // 彩带喷射
+    }
+
+    /** 网页确认输入完成：收掉大数字浮层（彩带残留动画终止），切换到网页显示签到结果 */
+    private fun dismissBigCodeOverlay() {
+        if (!bigOverlayShown) {
+            showWebOnly()
+            return
+        }
+        bigOverlayShown = false
+        stopConfetti()
+        bigOverlay.animate().alpha(0f).scaleX(0.88f).scaleY(0.88f).setDuration(220)
+            .withEndAction {
+                bigOverlay.visibility = View.GONE
+                bigOverlay.scaleX = 1f
+                bigOverlay.scaleY = 1f
+                showWebOnly()
+            }.start()
+    }
+
+    // ------------------------------------------------------------------ 彩带庆祝动画
+
+    /** 彩带容器（叠在大数字卡片之下、遮罩之上，纯装饰不拦截点击） */
+    private lateinit var confettiLayer: FrameLayout
+    private var confettiActive = false
+
+    private fun buildConfettiLayer() {
+        confettiLayer = FrameLayout(this)
+        confettiLayer.visibility = View.GONE
+        bigOverlay.addView(confettiLayer, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+    }
+
+    /** 喷射彩带：在浮层背景上撒 3 波彩色小方块，随机颜色/落点/旋转，每波约 0.9 秒 */
+    private fun launchConfetti() {
+        stopConfetti()
+        if (!::confettiLayer.isInitialized) return
+        confettiActive = true
+        confettiLayer.visibility = View.VISIBLE
+        val colors = intArrayOf(
+            0xFFE53935.toInt(), 0xFFFB8C00.toInt(), 0xFFFDD835.toInt(), 0xFF43A047.toInt(),
+            0xFF1E88E5.toInt(), 0xFF8E24AA.toInt(), 0xFF00ACC1.toInt(), 0xFFFF6F00.toInt()
+        )
+        for (wave in 0 until 3) {
+            handler.postDelayed({
+                if (!confettiActive) return@postDelayed
+                val w = bigOverlay.width.coerceAtLeast(1)
+                val h = bigOverlay.height.coerceAtLeast(1)
+                for (i in 0 until 10) {
+                    val piece = View(this)
+                    val sz = dp((6 + (i % 4) * 3)).toFloat()
+                    piece.setBackgroundColor(colors[(wave * 3 + i) % colors.size])
+                    val lp = FrameLayout.LayoutParams(sz.toInt(), (sz * 0.6f).toInt())
+                    lp.gravity = Gravity.TOP or Gravity.START
+                    // 从顶部中央偏左/偏右喷出
+                    lp.leftMargin = (w / 2) + (Math.random().toFloat() * w * 0.8f - w * 0.4f).toInt()
+                    lp.topMargin = (h * 0.12f).toInt()
+                    piece.setRotation((Math.random() * 90 - 45).toFloat())
+                    confettiLayer.addView(piece, lp)
+                    val tx = (Math.random() * w * 1.2 - w * 0.6f).toFloat()
+                    val ty = (h * (0.5 + Math.random() * 0.5)).toFloat()
+                    val rot = (360 + Math.random() * 540).toFloat() * (if (Math.random() > 0.5) 1 else -1)
+                    piece.animate().translationX(tx).translationY(ty).rotation(rot)
+                        .alpha(if (Math.random() > 0.5) 0f else 0.6f)
+                        .setDuration((700 + Math.random() * 600).toLong())
+                        .withEndAction { confettiLayer.removeView(piece) }
+                        .start()
+                }
+            }, wave * 320L)
+        }
+    }
+
+    private fun stopConfetti() {
+        confettiActive = false
+        if (::confettiLayer.isInitialized) {
+            confettiLayer.removeAllViews()
+            confettiLayer.visibility = View.GONE
+        }
+    }
+
+    /** 切到网页（面板整体隐藏，网页全屏）；顶部显示「返回签到」按钮 */
+    private fun showWebOnly() {
+        signPanelShown = false
+        // 切到网页视图 = 签到码已提交/用户在看网页 → 后台不再需要监听，立即停止全部监听（省电、防误报）
+        stopListeningQuiet()
+        webView.visibility = View.VISIBLE
+        signPanelWrap?.visibility = View.GONE   // 必须隐藏外层容器，否则空容器仍占一半屏
+        signPanel.visibility = View.GONE
+        backPanelBtn.visibility = View.VISIBLE
+        toggleWebBtn.text = "返回签到页"
+    }
+
+    private fun updatePanelDisplay() {
+        val shown = manualCode.padEnd(4, '_')
+        panelCodeDisplay.text = shown
+    }
+
+    /**
+     * 面板键盘输入：攒满 4 位后再注入（避免逐位注入被轮询误重置）。
+     * 网页未就绪时先缓存，就绪后自动补输；del/clear 就地编辑。
+     */
+    private fun onPanelKey(d: String) {
+        when (d) {
+            "del" -> {
+                if (manualCode.isNotEmpty()) manualCode = manualCode.dropLast(1)
+                updatePanelDisplay()
+                return
+            }
+            "clear" -> {
+                manualCode = ""
+                pendingPanelCode = ""
+                updatePanelDisplay()
+                return
+            }
+        }
+        if (manualCode.length >= 4) return
+        manualCode += d
+        updatePanelDisplay()
+        if (manualCode.length == 4) {
+            val code = manualCode
+            manualCode = ""
+            updatePanelDisplay()
+            lastFilledCode = code
+            addSpeechInfo("输入", "输满 $code，准备提交")
+            if (signReady) {
+                // 网页就绪：整体注入（jsFillCode 盲输，可靠），成功后自动切网页显示结果
+                submitCode(code, force = true)
+            } else {
+                // 网页未就绪：缓存，就绪后自动补输
+                pendingPanelCode = code
+                addSpeechInfo("提示", "网页未就绪，就绪后自动补输 $code")
+                toast("网页未就绪，将自动补输 $code")
+            }
+        }
+    }
+
+    /** 网页就绪后，把面板上提前输满的码补注入（网页加载慢的容错） */
+    private fun flushPendingPanelInput() {
+        if (!signPanelShown || !signReady || filling) return
+        if (pendingPanelCode.isEmpty()) return
+        val code = pendingPanelCode
+        pendingPanelCode = ""
+        addSpeechInfo("输入", "网页就绪，补输 $code")
+        lastFilledCode = code
+        submitCode(code, force = true)
+    }
+
+    // ------------------------------------------------------------------ WebView
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
+        val s = webView.settings
+        s.javaScriptEnabled = true
+        s.domStorageEnabled = true
+        s.databaseEnabled = true
+        s.setGeolocationEnabled(true)
+        s.javaScriptCanOpenWindowsAutomatically = true
+        s.cacheMode = WebSettings.LOAD_DEFAULT
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String,
+                callback: GeolocationPermissions.Callback
+            ) {
+                if (hasLocationPermission()) {
+                    callback.invoke(origin, true, false)
+                } else {
+                    pendingGeoOrigin = origin
+                    pendingGeoCallback = callback
+                    requestNeededPermissions()
+                }
+            }
+        }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: return false
+                applyUAFor(url)
+                return handleUrl(url)
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                if (url != null) applyUAFor(url)
+                // SSO 循环防护：连续加载 SSO 域页面（cas/sso 互相重定向）超过阈值 → 停止自动登录注入，
+                // 避免"明明登录过却卡在登录页无限跳转"
+                val host = try { Uri.parse(url ?: "").host?.lowercase() ?: "" } catch (e: Exception) { "" }
+                val isSsoHost = host.contains("sso") || host.contains("cas") ||
+                        host.contains("auth") || host.contains("passport")
+                if (isSsoHost) {
+                    ssoLoadCount++
+                    if (ssoLoadCount >= 6) {
+                        ssoLoadCount = 0
+                        autoLoginCooldownUntil = System.currentTimeMillis() + 120000 // 2 分钟不再自动提交
+                        autoLoginSubmitted = false
+                        try { webView.stopLoading() } catch (e: Exception) {}
+                        statusText.text = "登录异常（SSO 循环）：请点「查看网页」手动登录"
+                        DebugLog.append("SSO循环: 连续 6 次 SSO 页面加载，已停止自动登录")
+                    }
+                } else {
+                    ssoLoadCount = 0
+                }
+                signReady = false
+                // 新页面加载：标题回"加载中…"，四位横线与键盘未就绪，恢复加载动画
+                panelTitleText.text = "加载中…"
+                panelTitleText.setTextColor(SUB)
+                panelKeyGrid?.visibility = View.GONE
+                panelCodeDisplay.visibility = View.GONE
+                loadingBar?.visibility = View.VISIBLE
+                locLoadingBar?.visibility = View.GONE
+                filling = false
+                signPageFirstSeenAt = 0L
+                loginOk = false // 新页面重新探测登录态
+                autoLoginSubmitted = false
+                clearedOnceForPage = false
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // 注意：不注入桌面视口——统一认证页面在手机视口下表单完整（实测确认），
+                // 注入 width=1440 会让 Angular/Ionic 初始化卡在"跳转中"，表单无法渲染
+                startPolling()
+                // Debug：抓取每个加载完成页面的 URL + 正文文本到调试日志，便于确认签到结果文案
+                debugDumpPage("page:" + (url ?: "").take(80))
+            }
+        }
+    }
+
+    /**
+     * 按域名切换 User-Agent：
+     * - SSO 统一认证域（sso.hdu.edu.cn 等）→ 桌面 UA，让服务端返回电脑端账号密码登录
+     * - 签到站点（*.hdu.edu.cn）→ 恢复移动 UA（站点是移动端应用）
+     */
+    private fun applyUAFor(url: String) {
+        val host = Uri.parse(url).host?.lowercase() ?: return
+        val isSso = host == "sso.hdu.edu.cn" || host.endsWith(".sso.hdu.edu.cn") ||
+                host.contains("sso") || host.contains("auth") || host.contains("passport") || host.contains("cas")
+        val isSkl = host.endsWith("hdu.edu.cn") || host.endsWith("hdu.edu.cn.")
+        webView.settings.userAgentString = when {
+            isSso -> desktopUA
+            isSkl -> defaultUA
+            else -> webView.settings.userAgentString
+        }
+    }
+
+    private fun handleUrl(url: String): Boolean {
+        val host = Uri.parse(url).host ?: return false
+        val allowed = host.endsWith("hdu.edu.cn") ||
+                host.contains("alicdn.com") ||
+                host.contains("aliyuncs.com")
+        if (allowed) return false
+        if (url.startsWith("http")) {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            } catch (e: Exception) {
+                // 无浏览器可打开时忽略
+            }
+            return true
+        }
+        return false
+    }
+
+    // ------------------------------------------------------------------ JS 通信
+
+    private fun evalJs(js: String, onResult: (String?) -> Unit) {
+        webView.evaluateJavascript(js) { raw ->
+            var v: String? = raw
+            if (raw != null && raw.isNotEmpty()) {
+                v = try {
+                    (JSONTokener(raw).nextValue() as? String) ?: raw
+                } catch (e: Exception) {
+                    raw
+                }
+            }
+            onResult(v)
+        }
+    }
+
+    // ------------------------------------------------------------------ 轮询状态机
+
+    /** Debug：抓取当前页面 URL + 标题 + 正文全文，写入日志与详细抓取记录（仅调试开关开启时）。用于确认签到成功/失败真实文案、设计覆盖界面 */
+    private fun debugDumpPage(tag: String) {
+        if (!credStore.debugEnabled()) return
+        evalJs(
+            "(function(){try{var t=document.title||'';return JSON.stringify({href:location.href,title:t,text:document.body.innerText})}catch(e){return 'err:'+e.message}})()"
+        ) { res ->
+            val raw = res ?: "null"
+            var href: String
+            var title: String
+            var text: String
+            if (raw.startsWith("{") && raw.endsWith("}")) {
+                try {
+                    val j = JSONObject(raw)
+                    href = j.optString("href", "")
+                    title = j.optString("title", "")
+                    text = j.optString("text", "")
+                } catch (e: Exception) {
+                    href = ""; title = ""; text = raw
+                }
+            } else {
+                href = ""; title = ""; text = raw
+            }
+            val now = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date())
+            appendLog("debug[$tag]: $title | ${href.take(120)}")
+            // 详细抓取记录（全文保留，导出用）
+            DebugLog.addCapture(
+                "=== [$tag] $now\nURL: $href\n标题: $title\n正文:\n$text"
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------ 课表：面板动态显示当前课程
+
+    /** 课表：优先用本地已下载的课表；没有才拉取一次并固定保存（之后离线使用，不再刷新） */
+    private fun ensureSchedule() {
+        // 已在内存 → 直接显示
+        if (scheduleCourses.isNotEmpty()) {
+            updateCourseDisplay()
+            return
+        }
+        // 本地已导入的 ICS（设置页选择文件导入，固定保存，离线使用）→ 解析显示
+        val cached = credStore.scheduleCacheIcs()
+        if (!cached.isNullOrBlank()) {
+            scheduleCourses = parseIcs(cached)
+            scheduleFetchedAt = System.currentTimeMillis()
+            updateCourseDisplay()
+            return
+        }
+        // 未导入 → 显示引导（设置页导入 ICS 文件）
+        updateCourseDisplay()
+    }
+
+    private fun parseIcs(text: String): List<ScheduleParser.Course> = ScheduleParser.parse(text)
+
+    /** 当前课程匹配：正在上课，或下课后 5 分钟内仍显示（老师下课点名场景，宽限 5 分钟）；
+     *  无课时若今天接下来还有课，显示下一节课提醒 */
+    private fun updateCourseDisplay() {
+        val now = System.currentTimeMillis()
+        val cur = scheduleCourses.firstOrNull { now >= it.start && now <= it.end + 5 * 60 * 1000L }
+        if (cur != null) {
+            val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
+            val time = "${fmt.format(java.util.Date(cur.start))}-${fmt.format(java.util.Date(cur.end))}"
+            courseText.text = "当前课程：${cur.name}"
+            courseDetailText.text = listOfNotNull(
+                time,
+                cur.location.ifBlank { null },
+                cur.teacher.ifBlank { null }
+            ).joinToString(" · ")
+        } else {
+            if (scheduleCourses.isEmpty()) {
+                val hasIcs = !credStore.scheduleCacheIcs().isNullOrBlank()
+                courseText.text = if (hasIcs) "当前无课" else "当前无课（课表未导入）"
+                courseDetailText.text = if (hasIcs) "" else "右上角设置 → 导入课表（ICS 文件）"
+            } else {
+                // 无当前课：若接下来还有课，做下一节课提醒（当天只显示时间，跨天补日期）
+                val next = scheduleCourses
+                    .filter { it.start > now }
+                    .minByOrNull { it.start }
+                if (next != null) {
+                    val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
+                    val dayFmt = java.text.SimpleDateFormat("MM-dd", java.util.Locale.CHINA)
+                    val sameDay = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
+                        .format(java.util.Date(now)) == java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
+                        .format(java.util.Date(next.start))
+                    val time = if (sameDay) {
+                        fmt.format(java.util.Date(next.start))
+                    } else {
+                        "${dayFmt.format(java.util.Date(next.start))} ${fmt.format(java.util.Date(next.start))}"
+                    }
+                    courseText.text = "当前无课"
+                    courseDetailText.text = "下一节课：${next.name} · $time 开始"
+                } else {
+                    courseText.text = "当前无课"
+                    courseDetailText.text = "今天没有更多课了"
+                }
+            }
+        }
+    }
+
+    private fun startPolling() {
+        if (pollRunning) return
+        pollRunning = true
+        pollTick()
+    }
+
+    private fun pollTick() {
+        if (!pollRunning) return
+        evalJs(SignInjector.JS_DETECT_STATE) { raw ->
+            handleState(raw)
+            flushPendingPanelInput()
+            // 课表：每 60 秒匹配一次当前课程（本地数据，不重新拉取；无本地课表时首次会自动下载一次）
+            if (System.currentTimeMillis() - lastScheduleTickAt >= 60000L) {
+                lastScheduleTickAt = System.currentTimeMillis()
+                ensureSchedule()
+            }
+            handler.postDelayed({ pollTick() }, POLL_INTERVAL)
+        }
+    }
+
+    private fun handleState(raw: String?) {
+        val st = try { JSONObject(raw ?: "") } catch (e: Exception) { null } ?: return
+        val hasPw = st.optBoolean("hasPw")
+        val captcha = st.optBoolean("captcha")
+        val sign = st.optBoolean("sign")
+        val sign2 = st.optBoolean("sign2")
+        val loc = st.optBoolean("loc")
+        // 定位中转圈默认隐藏；仅"签到页就绪 + 已登录 + 定位未拿到"时显示
+        locLoadingBar?.visibility = View.GONE
+        val signed = st.optBoolean("signed")
+
+        when {
+            signed -> {
+                signReady = false
+                signPageFirstSeenAt = 0L
+                statusText.text = "签到完成"
+                // 签到完成：切回全屏面板显示完成状态（网页内弹层只有半屏，看不清）
+                showSignPanel()
+                panelCodeDisplay.text = "签到完成"
+                addSpeechInfo("完成", "签到成功")
+                // 完成动画：轻微放大回弹（不用 toast）
+                panelCodeDisplay.animate()
+                    .scaleX(1.15f).scaleY(1.15f).alpha(0.6f)
+                    .setDuration(160)
+                    .withEndAction {
+                        panelCodeDisplay.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200).start()
+                    }
+                    .start()
+                prevSigned = true
+            }
+            hasPw -> {
+                signReady = false
+                prevSigned = false
+                signPageFirstSeenAt = 0L
+                if (!credStore.hasCredentials()) {
+                    // 没保存账号：必须切到网页让用户看到登录页
+                    showWebOnly()
+                    statusText.text = "登录页：请在右上角「设置」保存学号密码后自动登录"
+                } else if (captcha) {
+                    // 有验证码：切到网页手动完成登录（自动登录暂停）
+                    showWebOnly()
+                    statusText.text = "登录页：检测到验证码，请手动完成登录"
+                    tryAutoLogin(submit = false)
+                } else if (autoLoginSubmitted) {
+                    // 已自动提交过一次：给页面时间跳转；
+                    // 若超过 12 秒仍停留登录页，说明提交未生效，重置标志重新填表提交（最多 2 次，防死循环）
+                    if (System.currentTimeMillis() - autoLoginSubmittedAt > 12000) {
+                        autoLoginSubmitted = false
+                        if (autoLoginRetries >= 2) {
+                            autoLoginRetries = 0
+                            autoLoginCooldownUntil = System.currentTimeMillis() + 120000
+                            showWebOnly()
+                            statusText.text = "自动登录多次失败，请在网页中手动完成登录"
+                            DebugLog.append("自动登录: 提交 ${autoLoginRetries + 2} 次未生效，转手动")
+                        } else {
+                            autoLoginRetries++
+                            statusText.text = "登录页：重新自动登录中…"
+                            tryAutoLogin(submit = true)
+                        }
+                    } else {
+                        statusText.text = "登录页：已自动提交，等待页面处理…"
+                    }
+                } else {
+                    // 后台自动登录中：保持原生面板，用户可继续提前输码
+                    statusText.text = "登录页：自动登录中…（可先输签到码）"
+                    tryAutoLogin(submit = true)
+                }
+            }
+            sign || sign2 -> {
+                signReady = true
+                // 签到界面加载完成：隐藏加载动画，显示四位横线与键盘（加载完成前隐藏，显示"加载中"）
+                panelTitleText.text = "签到就绪"
+                panelTitleText.setTextColor(TEXT)
+                panelKeyGrid?.visibility = View.VISIBLE
+                panelCodeDisplay.visibility = View.VISIBLE
+                loadingBar?.visibility = View.GONE
+                // 页面加载完成后才允许执行 JS：每次页面只清一次密码框残留
+                if (!clearedOnceForPage) {
+                    clearedOnceForPage = true
+                    evalJs(SignInjector.JS_CLEAR_SITE_CODE) { _ -> }
+                }
+                // 再次进入签到页时，恢复面板输入态（上次签到完成后显示"签到完成"）
+                if (signPanelShown && panelCodeDisplay.text == "签到完成") {
+                    manualCode = ""
+                    updatePanelDisplay()
+                    toggleWebBtn.text = "查看网页"
+                }
+                prevSigned = false
+                if (signPageFirstSeenAt == 0L) signPageFirstSeenAt = System.currentTimeMillis()
+                if (sign && !loc && loginOk) {
+                    // 已登录但定位未拿到：等定位，必要时刷新（未登录时不刷新，避免反复加载）
+                    val elapsed = System.currentTimeMillis() - signPageFirstSeenAt
+                    // 定位中转圈显示在键盘位置（与加载动画同款大转圈），键盘与四位横线暂隐
+                    panelTitleText.text = "定位中…"
+                    panelTitleText.setTextColor(SUB)
+                    panelKeyGrid?.visibility = View.GONE
+                    panelCodeDisplay.visibility = View.GONE
+                    loadingBar?.visibility = View.GONE
+                    locLoadingBar?.visibility = View.VISIBLE
+                    statusText.text = "签到就绪：等待定位…"
+                    updateLocation()
+                    if (!hasLocationPermission() && elapsed > 8000) {
+                        statusText.text = "签到就绪：需要定位权限，请在弹窗中允许"
+                        requestNeededPermissions()
+                    } else if (elapsed > 12000 && System.currentTimeMillis() - lastReloadAt > 60000) {
+                        lastReloadAt = System.currentTimeMillis()
+                        webView.reload()
+                    }
+                } else {
+                    // 定位已就绪/无需等待：恢复键盘、关闭定位转圈，并显示当前经纬度
+                    locLoadingBar?.visibility = View.GONE
+                    panelKeyGrid?.visibility = View.VISIBLE
+                    panelCodeDisplay.visibility = View.VISIBLE
+                    statusText.text = if (loc) "签到就绪（定位正常）" else "签到就绪"
+                    updateLocation()
+                }
+                maybeAutoListen()
+                maybeProbeLogin()
+            }
+            else -> {
+                signReady = false
+                prevSigned = false
+                signPageFirstSeenAt = 0L
+                // 显示当前页面地址（截断），便于定位卡在哪一步
+                val cur = webView.url ?: ""
+                val brief = try {
+                    val u = Uri.parse(cur)
+                    (u.host ?: "") + (u.path ?: "") + (u.query?.take(12) ?: "")
+                } catch (e: Exception) {
+                    cur.takeLast(50)
+                }
+                statusText.text = "页面加载中…（$brief）"
+                maybeProbeLogin() // SSO 登录回跳 skl 后，在这里探测已登录并切回签到页
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 自动登录
+
+    private fun tryAutoLogin(submit: Boolean = true) {
+        if (!credStore.hasCredentials() || !credStore.autoLogin()) return
+        if (submit && System.currentTimeMillis() < autoLoginCooldownUntil) return
+        val u = credStore.username() ?: return
+        val p = credStore.password() ?: return
+        evalJs(SignInjector.jsAutoLogin(u, p, submit)) { res ->
+            appendLog("autologin: $res")
+            when (res) {
+                "will-submit", "submitted", "form-submitted" -> {
+                    autoLoginCooldownUntil = System.currentTimeMillis() + 10000
+                    autoLoginSubmitted = true
+                    autoLoginSubmittedAt = System.currentTimeMillis()
+                    statusText.text = "登录页：已自动提交登录…"
+                }
+                "no-uname" -> {
+                    // 账号框还没渲染出来：不设冷却，等下一轮轮询重试
+                    appendLog("autologin: no-uname, retrying")
+                }
+                "filled-only" -> statusText.text = "登录页：已填账号密码，等待页面处理…"
+                else -> { /* no-login-page 等无需处理 */ }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 登录态探测（签到页不主动跳 SSO，App 原生层代为探测）
+
+    /**
+     * 仅在签到站点（skl.hdu.edu.cn）触发登录探测（SSO 域不探测，避免循环跳转）。
+     * App 原生层直接请求 /api/userinfo，绕开 WebView 内 fetch 的不确定性：
+     * - 401：后端返回 data.url（CAS → SSO 登录地址），loadUrl 跳转（自动切桌面 UA）
+     * - 200：已登录，停止探测，必要时跳回签到页
+     */
+    private fun maybeProbeLogin() {
+        if (loginOk) return
+        val now = System.currentTimeMillis()
+        if (now < loginProbeCooldownUntil) return
+        val host = webView.url?.let { Uri.parse(it).host } ?: return
+        if (!host.endsWith("skl.hdu.edu.cn")) return // 只在签到站点探测
+        loginProbeCooldownUntil = now + 5000
+        statusText.text = "检测登录状态…"
+        appendLog("probe login (host=$host)")
+        // 先取 WebView 里可能存在的 sessionId（同步 JS）
+        evalJs("localStorage.getItem('sessionId') || ''") { tokenRaw ->
+            var token = ""
+            if (tokenRaw != null) {
+                token = try {
+                    (JSONTokener(tokenRaw).nextValue() as? String) ?: ""
+                } catch (e: Exception) {
+                    tokenRaw.trim().trim('"')
+                }
+            }
+            probeLoginHttp(token)
+        }
+    }
+
+    private fun probeLoginHttp(token: String) {
+        Thread {
+            var result = "err"
+            try {
+                val url = "https://skl.hdu.edu.cn/api/userinfo?type=&index=&t=" + System.currentTimeMillis()
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+                if (token.isNotEmpty()) conn.setRequestProperty("X-Auth-Token", token)
+                val code = conn.responseCode
+                val body = if (code in 200..299) {
+                    conn.inputStream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+                } else {
+                    conn.errorStream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+                }
+                conn.disconnect()
+                result = when {
+                    code == 200 -> "ok"
+                    code == 401 -> {
+                        val loginUrl = try {
+                            JSONObject(body).optString("url", "")
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        if (loginUrl.isNotBlank()) "url:$loginUrl" else "401-no-url"
+                    }
+                    else -> "code:$code"
+                }
+            } catch (e: Exception) {
+                result = "err:" + (e.message ?: "网络错误")
+            }
+            val r = result
+            handler.post {
+                when {
+                    r == "ok" -> {
+                        loginOk = true
+                        probeFailCount = 0
+                        autoLoginRetries = 0      // 登录成功：重置自动登录重试计数
+                        ssoLoadCount = 0         // 登录成功：重置 SSO 循环计数
+                        appendLog("probe ok")
+                        // SSO 桌面端登录已回跳，恢复签到站点的移动 UA
+                        applyUAFor(SignInjector.HOME_URL)
+                        statusText.text = "签到就绪（已登录）"
+                        showSignPanel()
+                        gotoSignPageIfNeeded()
+                    }
+                    r.startsWith("url:") -> {
+                        probeFailCount = 0
+                        val loginUrl = r.removePrefix("url:")
+                        appendLog("probe url: $loginUrl")
+                        statusText.text = "未登录，正在跳转统一认证…"
+                        // 关键：loadUrl 不会经过 shouldOverrideUrlLoading，
+                        // 必须在这里先切桌面 UA，否则 SSO 收到手机 UA 会返回手机端登录界面
+                        applyUAFor(loginUrl)
+                        webView.loadUrl(loginUrl)
+                    }
+                    else -> {
+                        probeFailCount++
+                        appendLog("probe $r")
+                        if (probeFailCount >= 3) {
+                            statusText.text = "登录状态检测失败，请到「账号设置」核对账号后重试"
+                        }
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** 已登录但不在签到页时，通过 hash 路由切回签到页（不整页加载，避免循环） */
+    private fun gotoSignPageIfNeeded() {
+        evalJs("if (location.hash.indexOf('#/sign/in') < 0) location.hash = '#/sign/in'; 'ok'") { _ -> }
+    }
+
+    // ------------------------------------------------------------------ 签到码输入
+
+    private fun submitCode(code: String, force: Boolean = false) {
+        if (filling && !force) return
+        if (!signReady) {
+            toast("签到页未就绪，请稍候")
+            return
+        }
+        filling = true
+        stopListening()
+        lastFilledCode = code
+        statusText.text = "正在输入 $code…"
+        addSpeechInfo("输入", "自动输入 $code")
+        appendLog("fill: $code")
+        // 输入完成瞬间：立即弹全屏大数字 + 彩带，持续显示直到网页确认后跳转
+        showBigCodeOverlay(code)
+        val gen = ++fillGen
+        evalJs(SignInjector.jsFillCode(code)) { _ ->
+            pollFillResult(gen, 0)
+        }
+    }
+
+    private fun pollFillResult(gen: Int, attempt: Int) {
+        if (gen != fillGen) return // 已被更新的输入取代
+        if (attempt > 60) {
+            filling = false
+            statusText.text = "自动输入超时，请手动输入"
+            toast("自动输入超时，请手动输入")
+            dismissBigCodeOverlay()
+            return
+        }
+        evalJs(SignInjector.JS_CHECK_FILL) { res ->
+            when {
+                res == "ok" -> {
+                    filling = false
+                    statusText.text = "已输入签到码，等待页面确认…"
+                    addSpeechInfo("输入", "自动输入 $lastFilledCode 完成，等待页面确认")
+                    // 网页已确认输入完成：收起大数字浮层（彩带停止），动画切到网页显示签到结果
+                    dismissBigCodeOverlay()
+                    // Debug：提交后连续多次抓取结果页面（跳转/异步渲染慢，多采样 5 次 × 2 秒，持续约 10 秒），
+                    // 保证能抓到「签到成功页」或「签到码不存在」的真实文案
+                    for (i in 1..5) {
+                        handler.postDelayed({ debugDumpPage("after-submit-$i") }, i * 2000L)
+                    }
+                }
+                res != null && res.startsWith("fail:") -> {
+                    filling = false
+                    val reason = res.removePrefix("fail:")
+                    statusText.text = "自动输入失败（$reason），请手动输入"
+                    addSpeechInfo("输入", "自动输入失败：$reason")
+                    toast("自动输入失败，请手动输入或直接在页面上操作")
+                    dismissBigCodeOverlay()
+                }
+                else -> handler.postDelayed({ pollFillResult(gen, attempt + 1) }, 120)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 语音识别
+
+    /** 小米 MiMo 云端持续切片引擎：持续录音，每 3 秒上传最近 10 秒（重叠 7 秒）；两步方案：ASR 转写 + flash 综合判断；auto=true 为自动监听模式 */
+    private fun startMimoListening(auto: Boolean = false) {
+        stopListeningQuiet()
+        val key = credStore.mimoApiKey() ?: return
+        // 两步架构：ASR 专用模型纯转写 + flash 综合判断（用户确认改回，纯 flash 直出在安静环境下误报数字）
+        val engine = MiMoSpeechEngine(key, credStore.mimoBaseUrl(), credStore.mimoAsrModel(), credStore.mimoModel())
+        mimoEngine = engine
+        listening = true
+        mimoRestartCount = 0
+        mimoSliceCount = 0
+        llmExtractBusy = false
+        llmExtractFirst = true
+        heardPool.clear()
+        // 监听代际：本次监听的唯一编号；旧代际（上一轮监听）残留回调一律丢弃
+        mimoEpoch++
+        val epoch = mimoEpoch
+        // 状态栏不再显示监听/识别状态（用户要求左下角保持干净）
+        engine.start(object : MiMoSpeechEngine.Callback {
+            override fun onState(text: String) {
+                if (epoch != mimoEpoch || !listening) return   // 旧代际残留，丢弃
+                if (text.contains("监听")) addSpeechInfo("MiMo", "开始持续监听…（每 3 秒切片、最近 10 秒）")
+            }
+
+            override fun onResult(text: String) {
+                if (epoch != mimoEpoch || !listening || filling) return   // 旧代际残留/已停止/正在输码，一律丢弃
+                mimoSliceCount++
+                val clean = text.trim()
+                if (clean.isEmpty()) {
+                    addSpeechInfo("MiMo", "切片 $mimoSliceCount 识别结果：空")
+                    maybeLlmExtract()
+                    return
+                }
+                appendLog("mimo slice $mimoSliceCount: ${clean.take(80)}")
+                addSpeechInfo("MiMo", "切片 $mimoSliceCount 转写：$clean")
+                heardPool.addLast(clean)
+                while (heardPool.size > 10) heardPool.removeFirst()
+                // 本地快速路径：转写里直接有连续标准数字（阿拉伯/中文数字字）→ 立即注入，省一次 flash 调用
+                // 注意：只认标准数字，不做激进同音字映射（那曾导致安静环境误输出数字）
+                val quick = extractCode(clean)
+                if (quick != null && quick.length == 4) {
+                    submitCode(quick)
+                    return
+                }
+                maybeLlmExtract()
+            }
+
+            override fun onError(message: String) {
+                if (epoch != mimoEpoch || !listening) return   // 旧代际残留，丢弃
+                appendLog("mimo err: $message")
+                addSpeechInfo("MiMo", "错误：$message")
+                // 自动监听模式：Key 无效 / 麦克风失败等致命错误直接停止；
+                // 网络类错误（DNS 解析失败/连接超时/断网）持续自动重试，不限制次数——课堂不能因网络波动漏签
+                val fatal = message.contains("API Key") || message.contains("麦克风") ||
+                        message.contains("初始化") || message.contains("Key") ||
+                        message.contains("401") || message.contains("403") ||
+                        message.contains("模型") || message.contains("model")
+                val netErr = message.contains("Unable to resolve") || message.contains("connect") ||
+                        message.contains("timeout") || message.contains("网络") ||
+                        message.contains("Socket") || message.contains("Failed") || message.contains("refused")
+                if (auto && !fatal) {
+                    if (!netErr && mimoRestartCount >= 3) {
+                        mimoEngine = null
+                        listening = false
+                        toast(message)
+                        if (signReady) statusText.text = "签到就绪"
+                        return
+                    }
+                    handler.postDelayed({
+                        if (!listening && signReady && credStore.autoListen()) maybeAutoListen()
+                    }, 4000)
+                    return
+                }
+                mimoEngine = null
+                listening = false
+                toast(message)
+                if (signReady) statusText.text = "签到就绪"
+            }
+        })
+    }
+
+    /** 把累积的切片转写文本交给 flash 综合判断 4 位签到码（每 3 秒一次；以 flash 输出为准） */
+    private fun maybeLlmExtract() {
+        if (epochStale()) return
+        if (llmExtractBusy || filling) return
+        val combined = heardPool.joinToString(" ")
+        if (combined.isBlank()) return
+        val eng = mimoEngine ?: return
+        llmExtractBusy = true
+        appendLog("llm extract${if (llmExtractFirst) " (首次)" else ""}: ${combined.take(120)}")
+        eng.extractSignCode(combined, llmExtractFirst) { code ->
+            llmExtractBusy = false
+            llmExtractFirst = false   // 首次提示词只用于第一轮，之后都用累积提示词
+            if (epochStale() || filling) return@extractSignCode
+            if (code != null) {
+                appendLog("llm code: $code")
+                addSpeechInfo("综合", "判断为签到码 $code")
+                heardPool.clear()
+                submitCode(code)
+            } else {
+                addSpeechInfo("综合", "暂无可信签到码，继续监听")
+            }
+        }
+    }
+
+    /** 当前监听代际是否已过期（监听已停止或被新一轮取代） */
+    private fun epochStale(): Boolean = !listening
+
+    /** 自动监听：登录进入签到页后自动开始持续切片识别（仅 MiMo 引擎 + 已配 Key） */
+    private fun maybeAutoListen() {
+        if (!credStore.autoListen()) return
+        // 只在首页键盘面板监听；切到网页/设置/课表等任何其他界面都不监听
+        if (!signPanelShown) return
+        if (listening || filling) return
+        if (!signReady) return
+        if (!hasRecordPermission()) return
+        if (credStore.voiceEngine() != "mimo") {
+            if (System.currentTimeMillis() - lastAutoListenHintAt > 15000) {
+                lastAutoListenHintAt = System.currentTimeMillis()
+                statusText.text = "签到就绪（自动监听需在设置中选 MiMo 引擎）"
+            }
+            return
+        }
+        if (credStore.mimoApiKey().isNullOrBlank()) {
+            if (System.currentTimeMillis() - lastAutoListenHintAt > 15000) {
+                lastAutoListenHintAt = System.currentTimeMillis()
+                statusText.text = "签到就绪（自动监听需在设置中填 MiMo API Key）"
+            }
+            return
+        }
+        startMimoListening(auto = true)
+    }
+
+    /** 系统 SpeechRecognizer 引擎 */
+    private fun startListening() {
+        stopListeningQuiet()
+        val sr = SpeechRecognizer.createSpeechRecognizer(this)
+        if (sr == null) {
+            toast("系统语音服务不可用，可在「账号设置」切换 MiMo 云端识别")
+            statusText.text = "语音：系统语音服务不可用"
+            return
+        }
+        speech = sr
+        sr.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                listening = true
+                addSpeechInfo("系统", "开始听…（请报 4 位签到码）")
+            }
+
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                if (speech !== sr) return   // 已被更新的引擎/已停止，丢弃旧回调
+                heardText = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                appendLog("partial: $heardText")
+                addSpeechInfo("系统", "听到：$heardText")
+                tryFillFromHeard(heardText)
+            }
+
+            override fun onResults(results: Bundle?) {
+                if (speech !== sr) return   // 已被更新的引擎/已停止，丢弃旧回调
+                heardText = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                appendLog("final: $heardText")
+                addSpeechInfo("系统", "确认：$heardText")
+                if (!tryFillFromHeard(heardText)) onNoCode()
+            }
+
+            override fun onError(error: Int) {
+                if (speech !== sr) return   // 已被更新的引擎/已停止，丢弃旧回调
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH -> "未识别到数字，请再报一次"
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有说话"
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "识别服务忙，自动重试中"
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "缺少麦克风权限"
+                    SpeechRecognizer.ERROR_CLIENT -> "识别服务异常（网络或系统语音服务问题）"
+                    SpeechRecognizer.ERROR_NETWORK -> "网络错误，识别失败"
+                    SpeechRecognizer.ERROR_AUDIO -> "音频采集失败"
+                    else -> "识别错误($error)"
+                }
+                appendLog("asr error: $msg")
+                statusText.text = "语音：$msg"
+                addSpeechInfo("系统", "错误：$msg")
+                listenAttempts++
+                if (listenAttempts <= 2 && error in intArrayOf(
+                        SpeechRecognizer.ERROR_NO_MATCH,
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+                        SpeechRecognizer.ERROR_NETWORK
+                    )
+                ) {
+                    handler.postDelayed({
+                        if (!filling && signReady) {
+                            statusText.text = "语音：重试中，请报签到码…"
+                            startListening()
+                        }
+                    }, 500)
+                } else {
+                    onNoCode()
+                }
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+        try {
+            sr.startListening(intent)
+        } catch (e: Exception) {
+            toast("语音识别启动失败，请用手动输入")
+            stopListeningQuiet()
+        }
+    }
+
+    private fun tryFillFromHeard(text: String): Boolean {
+        val code = extractCode(text) ?: return false
+        lastFilledCode = code
+        submitCode(code)
+        return true
+    }
+
+    private fun onNoCode() {
+        listening = false
+        if (signReady) statusText.text = "签到就绪"
+        // 不提示听到的具体内容（用户要求删去"听到验证码 xx"类无用提示），只保留简短引导
+        addSpeechInfo("提示", "未识别到签到码，请重报或手动输入")
+        toast("未识别到签到码，请重报或手动输入")
+    }
+
+    /**
+     * 从识别文本中提取 4 位数字签到码（本地快速规则，提取不出时交给 LLM 综合判断）。
+     * 支持：阿拉伯数字、中文数字（零幺二两三四五六七八九洞）、
+     * 数位词（千/百/十）直接剔除（如"两千五百八十八"→2588）、
+     * 前后任意口语噪声（"签到码是2588"等）、逐位报数（"2 5 8 8"或"二五八八"）。
+     * 注意：混合短段（如"2"+"588"跨切片）无法可靠本地拼接，返回 null 交给 LLM 提取。
+     */
+    /**
+     * 从语音转写文本中提取 4 位签到码（本地快速路径，只认标准数字，绝不激进映射）。
+     *
+     * 原则：安静/杂音环境下宁可提取不到（交给 flash 综合判断），也不能把任意句子的
+     * 同音字拼成 4 位数字误注入（v1.12.3 的激进同音映射曾导致"不说话也输出数字"）。
+     * 只支持：阿拉伯数字、中文数字字（零/洞/幺/一/二/两/三/四/五/六/七/八/九）、英文数字单词；
+     * 剔除语气词；同音字归一化（"五百二斤"→5827 等）全部交给 flash 语义判断。
+     */
+    private fun extractCode(text: String): String? {
+        if (text.isBlank()) return null
+        // 1. 剔除语气词/助词（不参与数字映射）
+        var s = text
+        for (ch in charArrayOf('啊', '哦', '嗯', '呢', '嘛', '的', '了', '个', '是', '呀', '啦', '哈', '喂', '诶', '好')) {
+            s = s.replace(ch.toString(), "")
+        }
+        // 2. 英文数字单词 → 阿拉伯
+        val enMap = mapOf(
+            "zero" to "0", "one" to "1", "two" to "2", "three" to "3", "four" to "4",
+            "five" to "5", "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9"
+        )
+        for ((en, d) in enMap) {
+            s = Regex("(?i)\\b$en\\b").replace(s, d)
+        }
+        // 3. 只认标准数字字 → 数字流（不映射任何同音字）
+        val digitChars = setOf(
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+            '零', '洞', '幺', '一', '二', '两', '三', '四', '五', '六', '七', '八', '九'
+        )
+        val digits = StringBuilder()
+        for (ch in s) {
+            when (ch) {
+                in '0'..'9' -> digits.append(ch)
+                '零', '洞' -> digits.append('0')
+                '幺', '一' -> digits.append('1')
+                '二', '两' -> digits.append('2')
+                '三' -> digits.append('3')
+                '四' -> digits.append('4')
+                '五' -> digits.append('5')
+                '六' -> digits.append('6')
+                '七' -> digits.append('7')
+                '八' -> digits.append('8')
+                '九' -> digits.append('9')
+            }
+        }
+        // 4. 数字流取最后 4 位（报码在句尾，前面的"第3节/签到码"杂数字被自然丢弃）
+        if (digits.length >= 4) return digits.substring(digits.length - 4)
+        return null
+    }
+
+    private fun stopListening() {
+        try { mimoEngine?.stop() } catch (e: Exception) {}
+        mimoEngine = null
+        try { speech?.stopListening() } catch (e: Exception) {}
+        listening = false
+    }
+
+    private fun stopListeningQuiet() {
+        try { mimoEngine?.stop() } catch (e: Exception) {}
+        mimoEngine = null
+        try { speech?.stopListening() } catch (e: Exception) {}
+        try { speech?.destroy() } catch (e: Exception) {}
+        speech = null
+        listening = false
+    }
+
+    // ------------------------------------------------------------------ 权限
+
+    private fun hasLocationPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasRecordPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /** 原生定位：拿一次经纬度显示在面板（定位正常时）。无权限→隐藏；失败→"定位中…"由转圈兜底 */
+    private fun updateLocation() {
+        if (!hasLocationPermission()) {
+            locationText.text = ""
+            locationText.visibility = View.GONE
+            return
+        }
+        // 节流：20 秒内不重复请求（轮询每 2 秒一次）
+        val now = System.currentTimeMillis()
+        if (now - lastLocReqAt < 20000) return
+        lastLocReqAt = now
+        try {
+            val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+            val listener = object : LocationListener {
+                override fun onLocationChanged(loc: Location) {
+                    locationText.text = String.format(
+                        java.util.Locale.CHINA, "经纬度：%.6f, %.6f", loc.latitude, loc.longitude
+                    )
+                    locationText.visibility = View.VISIBLE
+                    try { lm.removeUpdates(this) } catch (e: Exception) {}
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+
+                override fun onProviderEnabled(provider: String) {}
+
+                override fun onProviderDisabled(provider: String) {}
+            }
+            lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper())
+            lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper())
+            // 10 秒超时清理：没拿到先显示"定位中…"（键盘位转圈继续兜底）
+            handler.postDelayed({
+                try { lm.removeUpdates(listener) } catch (e: Exception) {}
+                if (locationText.text.isEmpty()) locationText.text = "定位中…"
+            }, 10000)
+        } catch (e: Exception) {
+            locationText.text = ""
+            locationText.visibility = View.GONE
+        }
+    }
+
+    private fun requestNeededPermissions() {
+        val need = mutableListOf<String>()
+        if (!hasRecordPermission()) need.add(Manifest.permission.RECORD_AUDIO)
+        if (!hasLocationPermission()) {
+            need.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            need.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), REQ_PERMS)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_PERMS) return
+        val cb = pendingGeoCallback
+        val origin = pendingGeoOrigin
+        if (cb != null) {
+            pendingGeoCallback = null
+            pendingGeoOrigin = null
+            if (hasLocationPermission()) {
+                cb.invoke(origin!!, true, false)
+                handler.postDelayed({ webView.reload() }, 300)
+            } else {
+                cb.invoke(origin!!, false, false)
+            }
+        }
+        if (!hasRecordPermission()) {
+            toastOnce("no-record", "未授予麦克风权限，语音签到不可用，可选手动输入")
+        }
+    }
+
+    // ------------------------------------------------------------------ 识别信息展示
+
+    /** 记录一条识别信息（来源标签 + 内容），展示在识别信息栏；保留最近 100 条（展开可滚动查看全部） */
+    private fun addSpeechInfo(tag: String, msg: String) {
+        if (speechLog.size >= 100) speechLog.removeAt(0)
+        speechLog.add("[$tag] $msg")
+        updateSpeechInfoRow()
+        if (speechLogExpanded) speechInfoList.text = speechLog.joinToString("\n")
+    }
+
+    private fun updateSpeechInfoRow() {
+        val latest = speechLog.lastOrNull() ?: "暂无"
+        speechInfoRow.text = "识别：" + latest + (if (speechLogExpanded) " · 点按收起" else " · 点按展开")
+        if (!speechLogExpanded) speechInfoList.text = speechLog.joinToString("\n")
+    }
+
+    // ------------------------------------------------------------------ 工具
+
+    private fun toast(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toastOnce(key: String, msg: String) {
+        val now = System.currentTimeMillis()
+        if (key == lastToastKey && now - lastToastAt < 3000) return
+        lastToastKey = key
+        lastToastAt = now
+        toast(msg)
+    }
+
+    private fun appendLog(msg: String) {
+        if (!credStore.debugEnabled()) return
+        val line = "${DateFormat.format("HH:mm:ss", System.currentTimeMillis())} $msg"
+        DebugLog.append(line)
+    }
+}
