@@ -529,7 +529,7 @@ class MainActivity : Activity() {
             textSize = 14f
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER
-            background = roundedBg(ACCENT, 20)
+            background = roundedBg(ACCENT, 17)
             isClickable = true
             setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
         }
@@ -545,7 +545,7 @@ class MainActivity : Activity() {
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         titleBar.addView(backPanelBtn, LinearLayout.LayoutParams(dp(88), dp(38)).apply { rightMargin = dp(8) })
-        titleBar.addView(settingsBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
+        titleBar.addView(settingsBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
         root.addView(titleBar)
         trace("buildUi titleBar ok")
 
