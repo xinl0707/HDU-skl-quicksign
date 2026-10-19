@@ -1870,33 +1870,18 @@ class MainActivity : Activity() {
                 }
                 prevSigned = false
                 if (signPageFirstSeenAt == 0L) signPageFirstSeenAt = System.currentTimeMillis()
-                if (sign && !loc && loginOk) {
-                    // 已登录但定位未拿到：等定位，必要时刷新（未登录时不刷新，避免反复加载）
-                    val elapsed = System.currentTimeMillis() - signPageFirstSeenAt
-                    // 定位中转圈显示在键盘位置（与加载动画同款大转圈），键盘与四位横线暂隐
-                    panelTitleText.text = "定位中"
-                    panelTitleText.setTextColor(SUB)
-                    panelKeyGrid?.visibility = View.GONE
-                    panelCodeDisplay.visibility = View.GONE
-                    loadingBar?.visibility = View.GONE
-                    locLoadingBar?.visibility = View.VISIBLE
-                    statusText.text = "签到就绪：等待定位…"
-                    updateLocation()
-                    if (!hasLocationPermission() && elapsed > 8000) {
-                        statusText.text = "签到就绪：需要定位权限，请在弹窗中允许"
-                        requestNeededPermissions()
-                    } else if (elapsed > 12000 && System.currentTimeMillis() - lastReloadAt > 60000) {
-                        lastReloadAt = System.currentTimeMillis()
-                        webView.reload()
-                    }
-                } else {
-                    // 定位已就绪/无需等待：恢复键盘、关闭定位转圈，并显示当前经纬度
-                    locLoadingBar?.visibility = View.GONE
-                    panelKeyGrid?.visibility = View.VISIBLE
-                    panelCodeDisplay.visibility = View.VISIBLE
-                    statusText.text = if (loc) "签到就绪（定位正常）" else "签到就绪"
-                    updateLocation()
+                // 键盘始终可用：页面 loc 标志（.sign-page .tip-item.location）在登录回跳/路由切换瞬间
+                // 不可靠，曾导致"手动登录后键盘一直转圈"；定位状态改由下方经纬度文本原生刷新，
+                // 不再用页面 loc 标志阻塞键盘显示
+                locLoadingBar?.visibility = View.GONE
+                panelKeyGrid?.visibility = View.VISIBLE
+                panelCodeDisplay.visibility = View.VISIBLE
+                statusText.text = when {
+                    !hasLocationPermission() -> "签到就绪：需要定位权限，请在弹窗中允许"
+                    loc -> "签到就绪（定位正常）"
+                    else -> "签到就绪"
                 }
+                updateLocation()
                 maybeAutoListen()
                 }
                 maybeProbeLogin()
