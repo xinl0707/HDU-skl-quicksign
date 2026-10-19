@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Dialog
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -160,6 +161,7 @@ class MainActivity : Activity() {
     private var lastLocReqAt = 0L                 // 原生定位请求节流
     // 面板标题：加载中显示"加载中…"，就绪后显示"签到就绪"
     private lateinit var panelTitleText: TextView
+    private var locDisplayText: TextView? = null   // 经纬度显示（时间下方，N/S/E/W + 度数）
     private var statusWrap: LinearLayout? = null   // 底部状态栏容器（设置可隐藏）
     private var scheduleCourses: List<ScheduleParser.Course> = emptyList()
     private var scheduleFetchedAt = 0L
@@ -547,6 +549,18 @@ class MainActivity : Activity() {
             setPadding(dp(0), dp(0), dp(0), dp(2))
         }
         signPanel.addView(clockText, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        // 经纬度显示（时间下方，N/S/E/W + 度数，原始精度不截断）
+        locDisplayText = TextView(this).apply {
+            text = "定位中"
+            textSize = 11f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            setPadding(dp(0), dp(0), dp(0), dp(4))
+        }
+        signPanel.addView(locDisplayText, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
@@ -1788,6 +1802,7 @@ class MainActivity : Activity() {
                     // 最近 30 分钟内登录成功过：页面经过登录页只是 CAS 校验链（cookie 有效，1-2 秒回跳），
                     // 不重复注入避免打断回跳；若 15 秒仍停留登录页说明 cookie 已失效，重新填表并提示手动点击
                     if (System.currentTimeMillis() - lastLoginPageSeenAt > 15000) {
+                        showWebOnly()
                         statusText.text = "登录页：已填账号密码，请手动点击登录"
                         tryAutoLogin(submit = false)
                         toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
@@ -1814,8 +1829,9 @@ class MainActivity : Activity() {
                         statusText.text = "登录页：已自动提交，等待页面处理…"
                     }
                 } else {
-                    // 后台自动填账号密码（不自动点登录——学校认证页按钮点击不稳定，已放弃自动点击），
-                    // toast 提示用户手动点击登录按钮；点登录后回跳签到页，由 loginFlowPending 自动切回面板
+                    // 自动填账号密码后直接显示网页登录页（避免保持键盘但实际在登录页造成的闪烁），
+                    // toast 提示手动点登录；登录成功回跳后由 loginFlowPending 自动切回键盘面板
+                    showWebOnly()
                     statusText.text = "登录页：已填账号密码，请手动点击登录"
                     tryAutoLogin(submit = false)
                     toastOnce("manual-login", "已自动填入账号密码，请手动点击登录按钮")
@@ -2600,9 +2616,56 @@ class MainActivity : Activity() {
     private fun hasRecordPermission(): Boolean =
         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    /** 原生定位（签到页面定位校验用；经纬度显示已按用户要求移除，定位逻辑保留） */
+    /** 原生定位：请求位置并在时间下方显示经纬度（N/S/E/W + 度数，原始精度） */
     private fun updateLocation() {
-        // 经纬度显示已删除：定位状态由 loc 标志 + 键盘位定位转圈兜底，不再展示坐标文字
+        if (!hasLocationPermission()) {
+            locDisplayText?.text = "定位中"
+            return
+        }
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val provider = when {
+                lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+                else -> null
+            }
+            if (provider == null) {
+                locDisplayText?.text = "定位服务未开启"
+                return
+            }
+            // 节流：每 10 秒注册一次位置更新监听，避免频繁请求
+            if (System.currentTimeMillis() - lastLocReqAt > 10000) {
+                lastLocReqAt = System.currentTimeMillis()
+                try {
+                    lm.requestLocationUpdates(provider, 5000L, 0f, locationListener)
+                } catch (e: Exception) {}
+            }
+            // 立即显示最后已知位置
+            val last = lm.getLastKnownLocation(provider)
+            if (last != null) {
+                locDisplayText?.text = formatLocation(last.latitude, last.longitude)
+            }
+        } catch (e: Exception) {
+            locDisplayText?.text = "定位失败"
+        }
+    }
+
+    /** 经纬度格式化：N 30.003435°, E 120.661277°（原始精度不截断） */
+    private fun formatLocation(lat: Double, lng: Double): String {
+        val ns = if (lat >= 0) "N" else "S"
+        val ew = if (lng >= 0) "E" else "W"
+        return "$ns ${Math.abs(lat)}°, $ew ${Math.abs(lng)}°"
+    }
+
+    /** 定位更新回调：位置变化时刷新经纬度显示 */
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            locDisplayText?.text = formatLocation(location.latitude, location.longitude)
+        }
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
     }
 
     private fun requestNeededPermissions() {
