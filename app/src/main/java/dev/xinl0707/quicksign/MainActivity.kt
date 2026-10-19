@@ -710,8 +710,8 @@ class MainActivity : Activity() {
         rootFrame.addView(splashLayer, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        // 兜底：最多展示约 1 秒（页面/登录就绪会提前淡出；首帧已是品牌色，缩短等待）
-        handler.postDelayed({ dismissSplash() }, 1000)
+        // 兜底：最多展示约 0.5 秒（页面/登录就绪会提前淡出；首帧已是品牌色，等待尽量短）
+        handler.postDelayed({ dismissSplash() }, 500)
     }
 
     /** 淡出启动层（幂等） */
