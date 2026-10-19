@@ -1136,7 +1136,9 @@ class MainActivity : Activity() {
                 pendingRecordToast = false
                 toastOnce("no-record", "未授予麦克风权限，语音签到不可用，可选手动输入")
             }
-            startActivity(Intent(this, SettingsActivity::class.java))   // 第三步：直接进入设置界面
+            startActivity(Intent(this, SettingsActivity::class.java).apply {
+                putExtra("first_run", true)   // 首次引导：设置页隐藏返回，只能点右上角保存
+            })   // 第三步：直接进入设置界面
         }
         pCard.addView(guideNextBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1822,6 +1824,11 @@ class MainActivity : Activity() {
                 signReady = true
                 lastLoginPageSeenAt = 0L // 离开登录页：重置登录页停留计时
                 wasOnLoginPage = false   // 已回到签到页：登录流程结束
+                // 登录流程刚完成（页面从登录页回跳到签到页）：立即切回键盘面板，不等 probe（更快）
+                if (loginFlowPending && !prevSigned && !signResultShown) {
+                    loginFlowPending = false
+                    showSignPanel()
+                }
                 dismissSplash() // 页面就绪：启动层提前淡出（无需等满 1.6 秒）
                 if (resultWaiting) {
                     // 输码后结果判定中：键盘位保持大大大转圈过渡，键盘与四位横线隐藏

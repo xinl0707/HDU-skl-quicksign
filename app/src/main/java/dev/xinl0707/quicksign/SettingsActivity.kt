@@ -28,6 +28,7 @@ import android.widget.Toast
  */
 class SettingsActivity : Activity() {
 
+    private var firstRun = false   // 首次引导模式：隐藏返回按钮、拦截系统返回键，只能点右上角保存离开
     private lateinit var credStore: CredentialStore
     private lateinit var userInput: EditText
     private lateinit var passInput: EditText
@@ -234,6 +235,9 @@ class SettingsActivity : Activity() {
     }
 
     private fun buildUi() {
+        // 首次引导模式：从主界面引导第三步进入，隐藏左上角返回、拦截系统返回键，
+        // 只能通过右上角「保存」离开（防止用户在引导流程里乱点返回）
+        firstRun = intent.getBooleanExtra("first_run", false)
         // 状态栏/导航栏配色跟随主题风格，内容避开系统栏（edge-to-edge 适配）
         try {
             window.statusBarColor = BG
@@ -257,9 +261,14 @@ class SettingsActivity : Activity() {
 
         // 标题栏：左返回按钮 + 居中标题 + 右侧等宽占位，保证标题视觉真正居中
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val backBtn = button("返回", LIGHT, ACCENT)
-        backBtn.setOnClickListener { finish() }
-        titleRow.addView(backBtn, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        if (firstRun) {
+            // 首次引导：隐藏返回按钮（用等宽占位保持标题居中），只能点右上角保存离开
+            titleRow.addView(View(this), LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        } else {
+            val backBtn = button("返回", LIGHT, ACCENT)
+            backBtn.setOnClickListener { finish() }
+            titleRow.addView(backBtn, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
         val title = TextView(this).apply {
             text = "设置"
             textSize = 18f
@@ -690,6 +699,16 @@ class SettingsActivity : Activity() {
             toast(if (savedPath.isNotEmpty()) "已保存：$savedPath" else "已调起分享")
         } catch (e: Exception) {
             toast("导出失败：${e.message}")
+        }
+    }
+
+    /** 首次引导模式下拦截系统返回键：只能通过右上角「保存」离开设置页 */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (firstRun) {
+            toast("请点击右上角「保存」完成设置")
+        } else {
+            super.onBackPressed()
         }
     }
 }
