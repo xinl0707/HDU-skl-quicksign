@@ -1021,6 +1021,9 @@ class MainActivity : Activity() {
                 // 注意：不注入桌面视口——统一认证页面在手机视口下表单完整（实测确认），
                 // 注入 width=1440 会让 Angular/Ionic 初始化卡在"跳转中"，表单无法渲染
                 startPolling()
+                // 登录检测提前：页面一加载完成就探测（不等签到页渲染），
+                // 让登录态在用户输码前确认，避免"签到成功后才探测回来"触发后续重载
+                maybeProbeLogin()
                 // Debug：抓取每个加载完成页面的 URL + 正文文本到调试日志，便于确认签到结果文案
                 debugDumpPage("page:" + (url ?: "").take(80))
             }
@@ -1180,6 +1183,8 @@ class MainActivity : Activity() {
 
     private fun pollTick() {
         if (!pollRunning) return
+        // 登录检测提前的兜底：每轮轮询尝试探测（有 5 秒冷却与 skl 域检查，不打扰界面）
+        maybeProbeLogin()
         // SSO 循环硬拦截：HTTP 302 重定向链在 WebView 内部处理，onPageStarted 不会逐跳回调，
         // 这里每秒轮询 WebView 当前 URL，连续停在 SSO 域（cas/sso/auth）超过阈值 → 判定循环 → 停止
         val curUrl = webView.url ?: ""
@@ -1202,8 +1207,9 @@ class MainActivity : Activity() {
         }
         // 登录回跳后 skl 站点默认首页是课表(#/call/course)，且站点路由会把外部改的 hash 拉回课表：
         // 签到面板显示时，非签到路由整页导航回签到页（SPA 从 #/sign/in 初始化，登录态在 cookie，稳定停留；
-        // 节流 2 秒 + 10 秒内最多 3 次，防站点路由再次拉回造成无限重载）
-        if (signPanelShown) {
+        // 节流 2 秒 + 10 秒内最多 3 次，防站点路由再次拉回造成无限重载；
+        // 已签到成功(prevSigned)时不触发，避免冲掉签到完成状态）
+        if (signPanelShown && !prevSigned) {
             val u = curUrl
             val onWrongRoute = u.contains("hdu.edu.cn") && u.contains("#/") && !u.contains("#/sign/")
             if (onWrongRoute) {
@@ -1438,7 +1444,7 @@ class MainActivity : Activity() {
         val host = webView.url?.let { Uri.parse(it).host } ?: return
         if (!host.endsWith("skl.hdu.edu.cn")) return // 只在签到站点探测
         loginProbeCooldownUntil = now + 5000
-        statusText.text = "检测登录状态…"
+        // 后台探测：不覆盖界面状态文字（用户输码/签到不受打扰）
         appendLog("probe login (host=$host)")
         // 先取 WebView 里可能存在的 sessionId（同步 JS）
         evalJs("localStorage.getItem('sessionId') || ''") { tokenRaw ->
@@ -1507,7 +1513,10 @@ class MainActivity : Activity() {
                         appendLog("probe ok")
                         // SSO 桌面端登录已回跳，恢复签到站点的移动 UA
                         applyUAFor(SignInjector.HOME_URL)
-                        statusText.text = "签到就绪（已登录）"
+                        // 已签到成功则保持"签到完成"状态，不覆盖
+                        if (panelCodeDisplay.text != "签到完成") {
+                            statusText.text = "签到就绪（已登录）"
+                        }
                         showSignPanel()
                         gotoSignPageIfNeeded()
                     }
@@ -1551,8 +1560,9 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    /** 已登录但不在签到页时，通过 hash 路由切回签到页（不整页加载，避免循环） */
+    /** 已登录但不在签到页时，导航回签到页；已签到成功（prevSigned）则绝不重载，避免冲掉完成状态 */
     private fun gotoSignPageIfNeeded() {
+        if (prevSigned) return
         // 站点路由会把 JS 改的 hash 拉回课表，必须整页导航 #/sign/in（SPA 从签到页初始化）；
         // 已在签到页则不动，避免重复刷新
         val u = webView.url ?: ""
