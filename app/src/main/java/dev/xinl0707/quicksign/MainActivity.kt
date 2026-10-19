@@ -146,6 +146,7 @@ class MainActivity : Activity() {
     private var lastSignNavResetAt = 0L
     private var lastProbeOkAt = 0L        // 最近一次探测成功时间（登录记忆，防"明明登录了却跳统一认证"误报）
     private var lastLoginPageSeenAt = 0L  // 登录页首次出现时间（超时判定 cookie 是否真失效）
+    private var wasOnLoginPage = false    // 页面曾停在登录页（自动登录流程中）；probe ok 时据此决定是否切回面板
     private var lastReloadAt = 0L
     private var autoLoginCooldownUntil = 0L
     private var ssoLoadCount = 0          // 连续 SSO 域页面加载计数（防重定向死循环）
@@ -1268,25 +1269,16 @@ class MainActivity : Activity() {
             signed -> {
                 signReady = false
                 signPageFirstSeenAt = 0L
-                statusText.text = "签到完成"
-                // 签到完成：切回全屏面板显示完成状态（网页内弹层只有半屏，看不清）
-                showSignPanel()
-                panelCodeDisplay.text = "签到完成"
-                addSpeechInfo("完成", "签到成功")
-                // 完成动画：轻微放大回弹（不用 toast）
-                panelCodeDisplay.animate()
-                    .scaleX(1.15f).scaleY(1.15f).alpha(0.6f)
-                    .setDuration(160)
-                    .withEndAction {
-                        panelCodeDisplay.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200).start()
-                    }
-                    .start()
+                wasOnLoginPage = false
+                // 完成检测暂不切换界面：签到结果以网页实际显示为准
+                // （尚未爬取签到成功界面，signed 判定不可靠，切回面板会打断用户看结果）
                 prevSigned = true
             }
             hasPw -> {
                 signReady = false
                 prevSigned = false
                 signPageFirstSeenAt = 0L
+                wasOnLoginPage = true
                 if (lastLoginPageSeenAt == 0L) lastLoginPageSeenAt = System.currentTimeMillis()
                 if (!credStore.hasCredentials()) {
                     // 没保存账号：必须切到网页让用户看到登录页
@@ -1334,6 +1326,7 @@ class MainActivity : Activity() {
             sign || sign2 -> {
                 signReady = true
                 lastLoginPageSeenAt = 0L // 离开登录页：重置登录页停留计时
+                wasOnLoginPage = false   // 已回到签到页：登录流程结束
                 dismissSplash() // 页面就绪：启动层提前淡出（无需等满 1.6 秒）
                 // 签到界面加载完成：隐藏加载动画，显示四位横线与键盘（加载完成前隐藏，显示"加载中"）
                 panelTitleText.text = "签到就绪"
@@ -1532,7 +1525,12 @@ class MainActivity : Activity() {
                         if (panelCodeDisplay.text != "签到完成") {
                             statusText.text = "签到就绪（已登录）"
                         }
-                        showSignPanel()
+                        // 仅当页面刚走完自动登录流程时切回键盘面板；
+                        // 用户主动看网页（如提交后看签到结果）时保持网页不切换
+                        if (wasOnLoginPage) {
+                            wasOnLoginPage = false
+                            showSignPanel()
+                        }
                         gotoSignPageIfNeeded()
                     }
                     r.startsWith("url:") -> {
