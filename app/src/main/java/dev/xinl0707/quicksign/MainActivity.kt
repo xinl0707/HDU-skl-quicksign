@@ -1309,6 +1309,13 @@ class MainActivity : Activity() {
                 conn.connectTimeout = 10000
                 conn.readTimeout = 10000
                 if (token.isNotEmpty()) conn.setRequestProperty("X-Auth-Token", token)
+                // 关键：探测请求必须携带 WebView 的 Cookie。
+                // 登录态实际由 Cookie 维持（SSO 302 回跳时 Set-Cookie），localStorage.sessionId 可能为空/过期，
+                // 只带 token 会在"网页已登录但 sessionId 丢失"时误判 401，反复跳 SSO 卡死。
+                val cookies = try {
+                    android.webkit.CookieManager.getInstance().getCookie("https://skl.hdu.edu.cn") ?: ""
+                } catch (e: Exception) { "" }
+                if (cookies.isNotEmpty()) conn.setRequestProperty("Cookie", cookies)
                 val code = conn.responseCode
                 val body = if (code in 200..299) {
                     conn.inputStream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
