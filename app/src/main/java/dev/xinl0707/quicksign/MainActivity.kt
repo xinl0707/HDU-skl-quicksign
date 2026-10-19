@@ -241,6 +241,12 @@ class MainActivity : Activity() {
         try {
             credStore = CredentialStore(this)
             lastAppliedStyle = themeStyle()
+            // 首帧窗口背景直接跟随主题品牌色（styles.xml 静态色做不到），
+            // 在 setContentView 前设置，消除开屏第一帧与 splash 的品牌色差
+            try {
+                val palette = ThemePalette.palette(lastAppliedStyle, isNight)
+                window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(palette.bg))
+            } catch (e: Exception) {}
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             trace("before buildUi")
             buildUi()
@@ -318,7 +324,16 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         pollRunning = false
         stopListeningQuiet()
-        webView.destroy()
+        // 清理全部延迟回调（splash 淡出、轮询链、路由修正延迟等），防泄漏与销毁后回调崩溃
+        handler.removeCallbacksAndMessages(null)
+        try {
+            // WebView 标准释放：先摘回调、清视图、停页面，再 destroy（WebView 不释放会泄漏内存）
+            webView.webChromeClient = null
+            webView.webViewClient = WebViewClient()
+            webView.removeAllViews()
+            webView.loadUrl("about:blank")
+            webView.destroy()
+        } catch (e: Exception) {}
         super.onDestroy()
     }
 
