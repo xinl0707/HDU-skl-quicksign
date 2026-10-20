@@ -25,7 +25,7 @@ import android.widget.Toast
 
 /**
  * 账号与语音设置独立页面（主界面点右上角「设」进入）。
- * 内容分块卡片 + 可滚动：账号 / 语音识别（系统 or 小米 MiMo 云端）/ 课表导入 / 操作 / 调试。
+ * 内容分块卡片 + 可滚动：账号 / 语音识别（MIMO 云端）/ 课表导入 / 操作 / 调试。
  * 独立页面避免在主界面展开面板挤压网页预览。
  */
 class SettingsActivity : Activity() {
@@ -377,7 +377,7 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(2) })
 
-        // MiMo 配置区（选 MiMo 引擎时显示）
+        // MIMO 配置区（语音识别仅 MIMO：配置区恒显示）
         mimoBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.VISIBLE   // 语音识别仅 MIMO：配置区恒显示
@@ -631,7 +631,6 @@ class SettingsActivity : Activity() {
         if (u.isNotEmpty() && p.isNotEmpty()) {
             credStore.save(u, p, autoLoginCheck.isChecked)
         }
-        credStore.setVoiceEngine("mimo")   // 语音识别仅 MIMO 云端引擎（系统识别已移除）
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
@@ -663,7 +662,6 @@ class SettingsActivity : Activity() {
             return false
         }
         credStore.save(u, p, autoLoginCheck.isChecked)
-        credStore.setVoiceEngine("mimo")   // 语音识别仅 MIMO 云端引擎（系统识别已移除）
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())

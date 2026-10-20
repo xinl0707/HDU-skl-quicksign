@@ -81,21 +81,14 @@ class CredentialStore(context: Context) {
 
     // ------------------------------------------------------------------ 语音引擎配置
 
-    /** 语音识别引擎：仅 mimo（小米 MIMO 云端，系统识别已移除） */
-    fun voiceEngine(): String = prefs.getString("voice_engine", "mimo") ?: "mimo"
-
-    fun setVoiceEngine(engine: String) {
-        prefs.edit().putString("voice_engine", engine).apply()
-    }
-
-    /** MiMo API Key（加密存储） */
+    /** MIMO API Key（加密存储） */
     fun mimoApiKey(): String? = prefs.getString("mimo_key", null)?.let { decrypt(it) }
 
     fun setMimoApiKey(key: String) {
         prefs.edit().putString("mimo_key", if (key.isBlank()) null else encrypt(key)).apply()
     }
 
-    /** MiMo 接口地址（OpenAI 兼容，默认官方地址） */
+    /** MIMO 接口地址（OpenAI 兼容，默认官方地址） */
     fun mimoBaseUrl(): String =
         prefs.getString("mimo_url", "https://api.xiaomimimo.com/v1") ?: "https://api.xiaomimimo.com/v1"
 
@@ -103,7 +96,7 @@ class CredentialStore(context: Context) {
         prefs.edit().putString("mimo_url", url.trim()).apply()
     }
 
-    /** MiMo 综合判断模型（flash 多模态，用于把累积转写文本提取成 4 位签到码） */
+    /** MIMO 综合判断模型（flash 多模态，用于把累积转写文本提取成 4 位签到码） */
     fun mimoModel(): String =
         prefs.getString("mimo_model", "mimo-v2.6-flash") ?: "mimo-v2.6-flash"
 
@@ -111,7 +104,7 @@ class CredentialStore(context: Context) {
         prefs.edit().putString("mimo_model", model.trim().ifEmpty { "mimo-v2.6-flash" }).apply()
     }
 
-    /** MiMo ASR 转写模型（纯语音转写，官方：mimo-v2.5-asr） */
+    /** MIMO ASR 转写模型（纯语音转写，官方：mimo-v2.5-asr） */
     fun mimoAsrModel(): String =
         prefs.getString("mimo_asr_model", "mimo-v2.5-asr") ?: "mimo-v2.5-asr"
 
@@ -119,7 +112,7 @@ class CredentialStore(context: Context) {
         prefs.edit().putString("mimo_asr_model", model.trim().ifEmpty { "mimo-v2.5-asr" }).apply()
     }
 
-    /** 自动语音监听：默认开启（进入签到页自动开始持续录音 + 切片识别，仅 MiMo 引擎） */
+    /** 自动语音监听：默认开启（进入签到页自动开始持续录音 + 切片识别，仅 MIMO 引擎） */
     fun autoListen(): Boolean = prefs.getBoolean("auto_listen", true)
 
     fun setAutoListen(enabled: Boolean) {

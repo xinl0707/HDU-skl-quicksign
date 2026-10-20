@@ -15,7 +15,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * 小米 MiMo 云端语音识别引擎（OpenAI 兼容接口，零第三方依赖）——持续切片版。
+ * 小米 MIMO 云端语音识别引擎（OpenAI 兼容接口，零第三方依赖）——持续切片版。
  *
  * 架构（v1.12.6 定版，用户确认改回两步方案）：
  * - 转写层：mimo-v2.5-asr 纯语音转写。每 3 秒切最近 10 秒（重叠 7 秒，降低断句概率），

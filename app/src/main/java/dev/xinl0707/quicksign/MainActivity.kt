@@ -15,9 +15,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.text.format.DateFormat
 import android.util.TypedValue
 import android.view.Gravity
@@ -54,7 +51,7 @@ import java.net.URL
  *  - 登录过期自动重登（轮询检测登录页，自动填表提交）
  *  - 按域名切换 User-Agent：进 SSO 统一认证（sso.hdu.edu.cn）用桌面 UA 显示电脑端登录，
  *    回签到站点恢复移动 UA
- *  - 语音识别 4 位签到码自动输入：双引擎（系统 SpeechRecognizer / 小米 MiMo 云端）
+ *  - 语音识别 4 位签到码自动输入：MIMO 云端引擎（ASR 转写 + LLM 综合判断）
  *  - 手动键盘全屏弹层兜底（打开时先收起网页自带键盘，不叠加遮挡）
  */
 class MainActivity : Activity() {
@@ -228,7 +225,7 @@ class MainActivity : Activity() {
     // 定位中加载动画：签到页就绪但定位未拿到时，状态栏显示小转圈
     private var locLoadingBar: ProgressBar? = null
 
-    // 识别信息栏（独立面板，不覆盖网页）：展示系统 ASR / MiMo 识别内容与综合判断
+    // 识别信息栏（独立面板，不覆盖网页）：展示 MIMO 识别内容与综合判断
     private lateinit var speechInfoRow: TextView
     private lateinit var speechInfoScroll: ScrollView
     private lateinit var speechInfoList: TextView
@@ -267,14 +264,11 @@ class MainActivity : Activity() {
     private var loginProbeCooldownUntil = 0L
     private var probeFailCount = 0
 
-    private var speech: SpeechRecognizer? = null
     private var mimoEngine: MiMoSpeechEngine? = null
     private var listening = false
     private var isPaused = false                  // 主界面是否在后台（设置页/课表/多任务等）：后台绝不启动麦克风监听
-    private var listenAttempts = 0
-    private var heardText = ""
     private var mimoRestartCount = 0 // 自动监听下瞬时错误自动重启次数
-    private var mimoSliceCount = 0  // MiMo 切片序号（识别日志细化）
+    private var mimoSliceCount = 0  // MIMO 切片序号（识别日志细化）
     private var mimoEpoch = 0L      // 监听代际：每次启动监听 +1，旧代际的回调一律丢弃（防残留识别）
     private var lastAutoListenHintAt = 0L // 自动监听提示去重
     // 两步架构（ASR 转写 + flash 综合判断）：转写累积池（最近 10 片 ≈ 30 秒）+ 判断状态
@@ -293,8 +287,6 @@ class MainActivity : Activity() {
     // 默认移动 UA（SSO 按屏幕尺寸判端，手机视口返回手机版登录页；
     // 手机版已有"用户名密码"选项卡，jsAutoLogin 已适配注入——全部域统一移动 UA）
     private val defaultUA: String by lazy { WebSettings.getDefaultUserAgent(this) }
-    private val desktopUA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
     // ------------------------------------------------------------------ 生命周期
 
@@ -776,7 +768,7 @@ class MainActivity : Activity() {
         root.addView(statusWrap)
         trace("buildUi statusBar ok")
 
-        // 识别信息栏：一行实时显示最新识别内容（系统/MiMo/综合），点按展开全部记录；不遮挡网页。
+        // 识别信息栏：一行实时显示最新识别内容（MIMO/综合），点按展开全部记录；不遮挡网页。
         // 默认隐藏（设置里可开启"显示主页识别窗口"）
         val showSpeechInfo = credStore.showSpeechInfo()
         speechInfoRow = TextView(this).apply {
@@ -1609,8 +1601,8 @@ class MainActivity : Activity() {
      * - 签到站点（*.hdu.edu.cn）→ 恢复移动 UA（站点是移动端应用）
      */
     private fun applyUAFor(url: String) {
-        // SSO 按屏幕尺寸判端（不是 UA）：手机视口 → 手机版登录页（有"用户名密码"选项卡，jsAutoLogin 已适配）。
-        // 历史遗留的 desktopUA 会与手机视口不匹配，导致 sso 服务端 302 踢回 cas 形成死循环——统一保持移动 UA。
+        // SSO 统一按屏幕尺寸判端（不是 UA）：手机视口 → 手机版登录页（有"用户名密码"选项卡，jsAutoLogin 已适配）。
+        // 全部域统一保持移动 UA，避免与手机视口不匹配导致 sso 服务端 302 踢回 cas 形成死循环。
         webView.settings.userAgentString = defaultUA
     }
 
@@ -2382,7 +2374,7 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 语音识别
 
-    /** 小米 MiMo 云端持续切片引擎：持续录音，每 3 秒上传最近 10 秒（重叠 7 秒）；两步方案：ASR 转写 + flash 综合判断；auto=true 为自动监听模式 */
+    /** 小米 MIMO 云端持续切片引擎：持续录音，每 3 秒上传最近 10 秒（重叠 7 秒）；两步方案：ASR 转写 + flash 综合判断；auto=true 为自动监听模式 */
     private fun startMimoListening(auto: Boolean = false) {
         stopListeningQuiet()
         val key = credStore.mimoApiKey() ?: return
@@ -2489,7 +2481,7 @@ class MainActivity : Activity() {
     /** 当前监听代际是否已过期（监听已停止或被新一轮取代） */
     private fun epochStale(): Boolean = !listening
 
-    /** 自动监听：登录进入签到页后自动开始持续切片识别（仅 MiMo 引擎 + 已配 Key） */
+    /** 自动监听：登录进入签到页后自动开始持续切片识别（仅 MIMO 引擎 + 已配 Key） */
     private fun maybeAutoListen() {
         if (!credStore.autoListen()) return
         // 主界面在后台（设置页/课表/多任务/切走）：绝不启动监听——pollTick 后台仍会轮询，
@@ -2511,110 +2503,6 @@ class MainActivity : Activity() {
             return
         }
         startMimoListening(auto = true)
-    }
-
-    /** 系统 SpeechRecognizer 引擎 */
-    private fun startListening() {
-        stopListeningQuiet()
-        val sr = SpeechRecognizer.createSpeechRecognizer(this)
-        if (sr == null) {
-            toast("系统语音服务不可用，可在「账号设置」切换 MIMO 云端识别")
-            statusText.text = "语音：系统语音服务不可用"
-            return
-        }
-        speech = sr
-        sr.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                listening = true
-                addSpeechInfo("系统", "开始听…（请报 4 位签到码）")
-            }
-
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-
-            override fun onPartialResults(partialResults: Bundle?) {
-                if (speech !== sr) return   // 已被更新的引擎/已停止，丢弃旧回调
-                heardText = partialResults
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                appendLog("partial: $heardText")
-                addSpeechInfo("系统", "听到：$heardText")
-                tryFillFromHeard(heardText)
-            }
-
-            override fun onResults(results: Bundle?) {
-                if (speech !== sr) return   // 已被更新的引擎/已停止，丢弃旧回调
-                heardText = results
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                appendLog("final: $heardText")
-                addSpeechInfo("系统", "确认：$heardText")
-                if (!tryFillFromHeard(heardText)) onNoCode()
-            }
-
-            override fun onError(error: Int) {
-                if (speech !== sr) return   // 已被更新的引擎/已停止，丢弃旧回调
-                val msg = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH -> "未识别到数字，请再报一次"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有说话"
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "识别服务忙，自动重试中"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "缺少麦克风权限"
-                    SpeechRecognizer.ERROR_CLIENT -> "识别服务异常（网络或系统语音服务问题）"
-                    SpeechRecognizer.ERROR_NETWORK -> "网络错误，识别失败"
-                    SpeechRecognizer.ERROR_AUDIO -> "音频采集失败"
-                    else -> "识别错误($error)"
-                }
-                appendLog("asr error: $msg")
-                statusText.text = "语音：$msg"
-                addSpeechInfo("系统", "错误：$msg")
-                listenAttempts++
-                if (listenAttempts <= 2 && error in intArrayOf(
-                        SpeechRecognizer.ERROR_NO_MATCH,
-                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                        SpeechRecognizer.ERROR_NETWORK
-                    )
-                ) {
-                    handler.postDelayed({
-                        if (!filling && signReady) {
-                            statusText.text = "语音：重试中，请报签到码…"
-                            startListening()
-                        }
-                    }, 500)
-                } else {
-                    onNoCode()
-                }
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-        }
-        try {
-            sr.startListening(intent)
-        } catch (e: Exception) {
-            toast("语音识别启动失败，请用手动输入")
-            stopListeningQuiet()
-        }
-    }
-
-    private fun tryFillFromHeard(text: String): Boolean {
-        val code = extractCode(text) ?: return false
-        lastFilledCode = code
-        submitCode(code)
-        return true
-    }
-
-    private fun onNoCode() {
-        listening = false
-        if (signReady) statusText.text = "签到就绪"
-        // 不提示听到的具体内容（用户要求删去"听到验证码 xx"类无用提示），只保留简短引导
-        addSpeechInfo("提示", "未识别到签到码，请重报或手动输入")
-        toast("未识别到签到码，请重报或手动输入")
     }
 
     /**
@@ -2676,16 +2564,12 @@ class MainActivity : Activity() {
     private fun stopListening() {
         try { mimoEngine?.stop() } catch (e: Exception) {}
         mimoEngine = null
-        try { speech?.stopListening() } catch (e: Exception) {}
         listening = false
     }
 
     private fun stopListeningQuiet() {
         try { mimoEngine?.stop() } catch (e: Exception) {}
         mimoEngine = null
-        try { speech?.stopListening() } catch (e: Exception) {}
-        try { speech?.destroy() } catch (e: Exception) {}
-        speech = null
         listening = false
     }
 
