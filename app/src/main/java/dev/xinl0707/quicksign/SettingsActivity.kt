@@ -187,7 +187,7 @@ class SettingsActivity : Activity() {
             setColor(color)
         }
 
-    private fun button(label: String, bg: Int, fg: Int, big: Boolean = false, radius: Int = 12): Button {
+    private fun button(label: String, bg: Int, fg: Int, big: Boolean = false, radius: Int = 14): Button {
         val b = Button(this)
         b.text = label
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (big) 15f else 13f)
@@ -221,7 +221,7 @@ class SettingsActivity : Activity() {
             textSize = 15f
             setTextColor(TEXT)
             setHintTextColor(HINT)
-            background = roundedBg(CARD, 10)
+            background = roundedBg(CARD, 12)
             setPadding(dp(12), dp(10), dp(12), dp(10))
             setText(credStore.username() ?: "")
         }
@@ -229,7 +229,7 @@ class SettingsActivity : Activity() {
     /** 分块卡片容器（圆角背景 + 内边距，视觉分组） */
     private fun block(title: String): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = roundedBg(CARD, 14)
+        background = roundedBg(CARD, 16)
         setPadding(dp(14), dp(12), dp(14), dp(12))
         addView(TextView(this@SettingsActivity).apply {
             text = title
@@ -285,7 +285,7 @@ class SettingsActivity : Activity() {
         }
         titleRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         // 右上角保存按钮（原"操作"块里的保存设置移到这里，操作块只留登录/清除）
-        val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 10)
+        val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 14)
         saveTop.setOnClickListener { save() }
         titleRow.addView(saveTop, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(titleRow, LinearLayout.LayoutParams(
