@@ -607,7 +607,7 @@ class SettingsActivity : Activity() {
         ).apply { topMargin = dp(8) })
 
         // 弹窗测试：演示各类结果浮层（签到成功/签到码无效/等待转圈/大数字+彩带/Toast），便于核对样式与层级
-        val testBtn = button("弹窗测试", LIGHT, ACCENT)
+        val testBtn = button("弹窗测试", LIGHT, ACCENT, radius = 18)
         testBtn.setOnClickListener {
             val items = arrayOf("签到成功覆盖页", "签到码无效弹窗", "结果等待转圈", "大数字 + 彩带", "Toast 提示")
             AlertDialog.Builder(this)

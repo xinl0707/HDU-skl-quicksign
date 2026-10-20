@@ -917,17 +917,19 @@ class MainActivity : Activity() {
             background = roundedBg(CARD, 30)
             setPadding(dp(30), dp(30), dp(30), dp(26))
         }
-        // 成功徽章：印章感——外层 SUCCESS 圆 + 内圈白圆 + SUCCESS 对勾（反色印章）
-        val badgeWrap = FrameLayout(this)
+        // 成功徽章：反色印章——外层 SUCCESS 大圆环 + 内圈白圆 + SUCCESS 对勾（真正的印章质感）
+        val badgeWrap = FrameLayout(this).apply {
+            background = roundedBg(SUCCESS, 100)
+        }
         val badge = TextView(this).apply {
             text = "✓"
             textSize = 42f
             gravity = Gravity.CENTER
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(SUCCESS)
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
-            background = roundedBg(SUCCESS, 100)
+            background = roundedBg(0xFFFFFFFF.toInt(), 100)
         }
-        badgeWrap.addView(badge, FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER))
+        badgeWrap.addView(badge, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
         resultCard.addView(badgeWrap, LinearLayout.LayoutParams(dp(86), dp(86)))
         val resultTitle = TextView(this).apply {
             text = "签到成功"
