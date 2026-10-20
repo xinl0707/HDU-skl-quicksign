@@ -2606,10 +2606,17 @@ class MainActivity : Activity() {
                 val quick = extractCode(clean)
                 if (quick != null && quick.length == 4) {
                     // 重复报码被切片截断时，尾部片段（如"八一四七八一四"的"七八一四"）恰好也是连续4位，
-                    // 但它是第二遍报码的尾部不是完整码。若历史转写里出现过包含该4位且更长的连续段 → 交 LLM 综合判断
-                    if (isRepeatedTail(quick)) {
-                        appendLog("extract 命中 $quick 但为重复报码尾部（历史有更长连续段）→ 交 LLM")
-                        maybeLlmExtract()
+                    // 但它是第二遍报码的尾部不是完整码。若历史转写里有更长连续段以其结尾 → 取长段前4位（历史已含完整报码）
+                    val tailSeg = findTailOfLongerSegment(quick)
+                    if (tailSeg != null) {
+                        if (repeatPrefixMatch(tailSeg.substring(0, 4), tailSeg.substring(4))) {
+                            val full = tailSeg.substring(0, 4)
+                            appendLog("extract 命中 $quick 为重复报码尾部 → 历史长段前4位 $full → 直接提交，跳过 LLM")
+                            submitCode(full)
+                        } else {
+                            appendLog("extract 命中 $quick 但历史长段无法确认完整码 → 交 LLM")
+                            maybeLlmExtract()
+                        }
                         return
                     }
                     appendLog("extract 快速路径命中 $quick → 直接提交，跳过 LLM")
@@ -2749,29 +2756,51 @@ class MainActivity : Activity() {
             return null
         }
         appendLog("extract 最长连续数字段: $seg (${seg.length}位)")
-        // 4. 只有恰好连续 4 位才走快速路径；<4 或 >4 一律交 LLM（>4 可能是重复报码被截断，需模型综合判断）
-        if (seg.length == 4) {
-            val r = seg.map { c ->
-                when (c) {
-                    in '0'..'9' -> c
-                    '零','洞' -> '0'
-                    '幺','一' -> '1'
-                    '二','两' -> '2'
-                    '三' -> '3'
-                    '四' -> '4'
-                    '五' -> '5'
-                    '六' -> '6'
-                    '七' -> '7'
-                    '八' -> '8'
-                    '九' -> '9'
-                    else -> c
-                }
-            }.joinToString("")
-            appendLog("extract 连续4位命中 → $r")
+        val d = segToDigits(seg)
+        // 4. 本地快速路径（都转阿拉伯后判定）：
+        //    - 恰好 4 位 → 直接命中；
+        //    - >4 位且「前4位+剩余位」构成循环前缀重复（如 8147814 → 前4 8147 + 剩余 814 是 8147 的前缀重复）→ 完整码=前4位，本地命中；
+        //    - 其余交 LLM
+        if (d.length == 4) {
+            appendLog("extract 连续4位命中 → $d")
+            return d
+        }
+        if (d.length > 4 && repeatPrefixMatch(d.substring(0, 4), d.substring(4))) {
+            val r = d.substring(0, 4)
+            appendLog("extract 长串${d.length}位循环重复 → 完整码 $r → 本地命中，跳过 LLM")
             return r
         }
-        appendLog("extract 连续段${seg.length}位≠4 → null，交 LLM")
+        appendLog("extract 连续段${seg.length}位无法本地确认 → null，交 LLM")
         return null
+    }
+
+    /** 连续数字字段（可含中文数字字）→ 阿拉伯数字串 */
+    private fun segToDigits(seg: String): String {
+        return seg.map { c ->
+            when (c) {
+                in '0'..'9' -> c
+                '零', '洞' -> '0'
+                '幺', '一' -> '1'
+                '二', '两' -> '2'
+                '三' -> '3'
+                '四' -> '4'
+                '五' -> '5'
+                '六' -> '6'
+                '七' -> '7'
+                '八' -> '8'
+                '九' -> '9'
+                else -> c
+            }
+        }.joinToString("")
+    }
+
+    /** 完整码4位 + 剩余位是否构成循环前缀重复：剩余每个字符依次等于完整码对应循环位（rest[i] == code4[i % 4]） */
+    private fun repeatPrefixMatch(code4: String, rest: String): Boolean {
+        if (rest.isEmpty()) return true
+        for (i in rest.indices) {
+            if (rest[i] != code4[i % 4]) return false
+        }
+        return true
     }
 
     /** 返回转写中最长连续标准数字字字段（原样，未转阿拉伯），无则 null */
@@ -2792,13 +2821,16 @@ class MainActivity : Activity() {
         return if (bestLen == 0) null else text.substring(bestStart, bestStart + bestLen)
     }
 
-    /** 候选码是否为「重复报码被截断的尾部」：heardPool 某条转写里存在比它更长、且末尾恰为该码的连续数字段 */
-    private fun isRepeatedTail(code: String): Boolean {
+    /** 候选4位码是否为「重复报码被截断的尾部」：heardPool 某条转写里有比它更长、末尾恰为该码（阿拉伯比较）的连续段，返回该长段阿拉伯串 */
+    private fun findTailOfLongerSegment(code: String): String? {
         for (t in heardPool) {
             val seg = longestDigitSegment(t) ?: continue
-            if (seg.length > 4 && seg.endsWith(code)) return true
+            if (seg.length > 4) {
+                val d = segToDigits(seg)
+                if (d.endsWith(code)) return d
+            }
         }
-        return false
+        return null
     }
 
     private fun stopListening() {
