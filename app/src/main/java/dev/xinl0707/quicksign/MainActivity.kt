@@ -1279,12 +1279,10 @@ class MainActivity : Activity() {
 
     /** 花哨开屏动画的元素引用（buildSplashLayer 里创建，playSplashAnimation 里驱动） */
     private lateinit var splashIcon: ImageView
-    private lateinit var splashRing: View
-    private lateinit var splashParticles: List<View>
+    private lateinit var splashSlotRow: LinearLayout
     private lateinit var splashSlots: List<View>
     private lateinit var splashTitle: TextView
     private lateinit var splashSub: TextView
-    private lateinit var splashGlide: View
     private var splashAnimSet: AnimatorSet? = null
 
     /** 全屏渐变启动层：主题色渐变 + 光斑 + 图标弹入 + 打卡雷达波纹 + 粒子扩散 +
@@ -1319,7 +1317,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        // 图标 + 雷达波纹 + 粒子（同一容器内叠加）
+        // 图标（单独弹入）
         val iconWrap = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(112), dp(112))
         }
@@ -1330,41 +1328,10 @@ class MainActivity : Activity() {
             scaleY = 0.25f
         }
         iconWrap.addView(splashIcon, FrameLayout.LayoutParams(dp(88), dp(88), Gravity.CENTER))
-        // 打卡雷达波纹（图标外围扩散圆环：透明填充 + 描边）
-        splashRing = View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)).apply {
-                shape = GradientDrawable.OVAL
-                setStroke(dp(2), palette.accentSoft)
-            }
-            alpha = 0f
-            scaleX = 0.6f
-            scaleY = 0.6f
-        }
-        iconWrap.addView(splashRing, FrameLayout.LayoutParams(dp(104), dp(104), Gravity.CENTER))
-        // 彩色粒子（签到光效，向四周散开）
-        val particleColors = intArrayOf(
-            0xFFFF6F61.toInt(), 0xFFFFB74D.toInt(), 0xFFFFD54F.toInt(), 0xFF81C784.toInt(),
-            0xFF64B5F6.toInt(), 0xFFBA68C8.toInt(), 0xFF4DB6AC.toInt(), 0xFFFF8A65.toInt()
-        )
-        splashParticles = (0 until 8).map { i ->
-            View(this).apply {
-                background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    intArrayOf(particleColors[i], particleColors[i])).apply {
-                    shape = GradientDrawable.OVAL
-                    setSize(dp(8), dp(8))
-                }
-                alpha = 0f
-                visibility = View.VISIBLE
-            }
-        }
-        splashParticles.forEach { p ->
-            iconWrap.addView(p, FrameLayout.LayoutParams(dp(8), dp(8), Gravity.CENTER))
-        }
         center.addView(iconWrap, LinearLayout.LayoutParams(dp(112), dp(112)))
 
-        // 四位码槽（4 条横线，逐个点亮 = 输入签到码的仪式感）
-        val slotRow = LinearLayout(this).apply {
+        // 四位码槽（4 条横线，逐个点亮 = 输入签到码的仪式感；点亮后整体平移到主页四位横线完成衔接）
+        splashSlotRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_HORIZONTAL
         }
@@ -1383,13 +1350,13 @@ class MainActivity : Activity() {
             }
         }
         splashSlots.forEach { s ->
-            slotRow.addView(s, LinearLayout.LayoutParams(dp(26), dp(6)).apply {
+            splashSlotRow.addView(s, LinearLayout.LayoutParams(dp(26), dp(6)).apply {
                 marginStart = dp(7)
                 marginEnd = dp(7)
                 topMargin = dp(24)
             })
         }
-        center.addView(slotRow, LinearLayout.LayoutParams(
+        center.addView(splashSlotRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
@@ -1420,29 +1387,14 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER
         ))
 
-        // 底部流光进度条（亮段沿轨道往复滑动）
-        val glideTrack = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(3), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            ).apply { bottomMargin = dp(96) }
-        }
-        splashGlide = View(this).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(Color.TRANSPARENT, 0xFFFFFFFF.toInt(), Color.TRANSPARENT)
-            ).apply { cornerRadius = dp(1.5f).toFloat() }
-        }
-        glideTrack.addView(splashGlide, FrameLayout.LayoutParams(dp(120), dp(3)))
-        splashLayer.addView(glideTrack)
-
         // 注意：splashLayer 不在 buildSplashLayer 里 addView——
         // 必须在主界面 root 之后 addView 才能盖在最上层（FrameLayout 后加的在上）
-        // 兜底：动画总长约 2.4 秒，期间后台并行加载；页面就绪也不会早于最短时长淡出
+        // 兜底：动画总长约 2 秒（图标弹入 → 四位码槽点亮 → 槽平移衔接主页横线），期间后台并行加载
         splashShownAt = System.currentTimeMillis()
         handler.post {
             playSplashAnimation()
         }
-        handler.postDelayed({ dismissSplash() }, 2400)
+        handler.postDelayed({ dismissSplash() }, 2000)
     }
 
     /** 播放开屏动画序列（splash 挂载到 root 之后由 post 触发，保证首帧可渲染） */
@@ -1456,26 +1408,7 @@ class MainActivity : Activity() {
             val iconScaleY = PropertyValuesHolder.ofFloat("scaleY", 0.25f, 1.12f, 1f)
             val iconZoom = ObjectAnimator.ofPropertyValuesHolder(splashIcon, iconScale, iconScaleY)
                 .setDuration(620).apply { interpolator = OvershootInterpolator(1.2f) }
-            // 2. 打卡雷达波纹（扩散两圈）
-            val ringAnim = ObjectAnimator.ofPropertyValuesHolder(
-                splashRing,
-                PropertyValuesHolder.ofFloat("scaleX", 0.6f, 2.0f),
-                PropertyValuesHolder.ofFloat("scaleY", 0.6f, 2.0f),
-                PropertyValuesHolder.ofFloat("alpha", 0.85f, 0f)
-            ).setDuration(750).apply { repeatCount = 2; repeatMode = ValueAnimator.RESTART }
-            // 3. 彩色粒子向四周散开
-            val particleAnim = AnimatorSet()
-            splashParticles.forEachIndexed { i, p ->
-                val angle = i * Math.PI * 2 / splashParticles.size
-                val dx = (Math.cos(angle) * dp(52)).toFloat()
-                val dy = (Math.sin(angle) * dp(52)).toFloat()
-                particleAnim.playTogether(
-                    ObjectAnimator.ofFloat(p, "translationX", 0f, dx).setDuration(680),
-                    ObjectAnimator.ofFloat(p, "translationY", 0f, dy).setDuration(680),
-                    ObjectAnimator.ofFloat(p, "alpha", 0f, 1f, 0f).setDuration(680)
-                )
-            }
-            // 4. 四位码槽逐个点亮（每个槽内 缩放+淡入 并行，槽之间顺序延迟）
+            // 2. 四位码槽逐个点亮（每个槽内 缩放+淡入 并行，槽之间顺序延迟）
             val slotAnim = AnimatorSet()
             splashSlots.forEachIndexed { i, s ->
                 val one = AnimatorSet()
@@ -1486,7 +1419,7 @@ class MainActivity : Activity() {
                 one.startDelay = (i * 230).toLong()
                 slotAnim.playTogether(one)
             }
-            // 5. 标题上移淡入
+            // 3. 标题上移淡入
             val titleAnim = AnimatorSet().apply {
                 playTogether(
                     ObjectAnimator.ofFloat(splashTitle, "alpha", 0f, 1f).setDuration(420),
@@ -1494,23 +1427,15 @@ class MainActivity : Activity() {
                 )
                 startDelay = 900
             }
-            // 6. 副标题呼吸
+            // 4. 副标题呼吸
             val subAnim = ObjectAnimator.ofFloat(splashSub, "alpha", 0f, 1f).setDuration(500)
             val subBreath = ObjectAnimator.ofFloat(splashSub, "alpha", 0.45f, 1f).setDuration(1100).apply {
                 repeatCount = ValueAnimator.INFINITE
                 repeatMode = ValueAnimator.REVERSE
                 startDelay = 500
             }
-            // 7. 流光进度条往复
-            val trackW = resources.displayMetrics.widthPixels - dp(120)
-            val glideAnim = ObjectAnimator.ofFloat(splashGlide, "translationX", 0f, trackW.toFloat(), 0f)
-                .setDuration(1900).apply {
-                    repeatCount = ValueAnimator.INFINITE
-                    repeatMode = ValueAnimator.RESTART
-                    startDelay = 600
-                }
 
-            set.playTogether(iconAlpha, iconZoom, ringAnim, particleAnim, slotAnim, titleAnim, subAnim, glideAnim)
+            set.playTogether(iconAlpha, iconZoom, slotAnim, titleAnim, subAnim, subBreath)
             splashAnimSet = set
             set.start()
         } catch (e: Exception) {
@@ -1523,20 +1448,61 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 淡出启动层（幂等）；页面/登录就绪也会提前调用，但保证至少展示约 2.4 秒（开屏动画时长），避免动画播不完 */
+    /** 淡出启动层（幂等）；页面/登录就绪也会提前调用，但保证至少展示约 2 秒（开屏动画时长），
+     *  之后四位码槽平移到主页四位横线完成衔接过渡 */
     private fun dismissSplash() {
         if (splashDismissed || !::splashLayer.isInitialized) return
-        val remain = 2400 - (System.currentTimeMillis() - splashShownAt)
+        val remain = 2000 - (System.currentTimeMillis() - splashShownAt)
         if (remain > 0) {
             handler.postDelayed({ dismissSplash() }, remain)
             return
         }
         splashDismissed = true
         splashAnimSet?.cancel()
+        playSplashToHomeTransition()
+    }
+
+    /** 开屏 → 主页衔接过渡：点亮完成的四位码槽整体平滑平移到主页四位横线位置并渐隐，
+     *  其余开屏元素同步淡出、splash 盖层渐隐露出主页，主页的 "____" 横线正好接住落点，
+     *  形成"四位码从开屏落进键盘区"的联动。主页横线原本隐藏时，过渡结束交还状态机控制。 */
+    private fun playSplashToHomeTransition() {
+        if (!::splashLayer.isInitialized) return
         try {
-            splashLayer.animate().alpha(0f).setDuration(450)
-                .withEndAction { splashLayer.visibility = View.GONE }
-                .start()
+            val wasCodeHidden = panelCodeDisplay.visibility != View.VISIBLE
+            if (wasCodeHidden) panelCodeDisplay.visibility = View.VISIBLE
+            // 计算槽行 → 主页四位横线的平移量（中心对齐）
+            val from = IntArray(2)
+            val to = IntArray(2)
+            splashSlotRow.getLocationOnScreen(from)
+            panelCodeDisplay.getLocationOnScreen(to)
+            val dx = (to[0] + panelCodeDisplay.width / 2) - (from[0] + splashSlotRow.width / 2)
+            val dy = (to[1] + panelCodeDisplay.height / 2) - (from[1] + splashSlotRow.height / 2)
+            val glide = ObjectAnimator.ofPropertyValuesHolder(
+                splashSlotRow,
+                PropertyValuesHolder.ofFloat("translationX", 0f, dx.toFloat()),
+                PropertyValuesHolder.ofFloat("translationY", 0f, dy.toFloat())
+            ).setDuration(560).apply { interpolator = DecelerateInterpolator(1.5f) }
+            val rowFade = ObjectAnimator.ofFloat(splashSlotRow, "alpha", 1f, 0f).setDuration(520)
+            val iconFade = ObjectAnimator.ofFloat(splashIcon, "alpha", 1f, 0f).setDuration(420)
+            val titleFade = ObjectAnimator.ofFloat(splashTitle, "alpha", 1f, 0f).setDuration(420)
+            val subFade = ObjectAnimator.ofFloat(splashSub, "alpha", 1f, 0f).setDuration(420)
+            val set = AnimatorSet()
+            set.playTogether(glide, rowFade, iconFade, titleFade, subFade)
+            set.addListener(object : android.animation.Animator.AnimatorListener {
+                override fun onAnimationStart(a: android.animation.Animator) {}
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    splashLayer.visibility = View.GONE
+                    if (wasCodeHidden) panelCodeDisplay.visibility = View.GONE
+                }
+                override fun onAnimationCancel(a: android.animation.Animator) {
+                    splashLayer.visibility = View.GONE
+                    if (wasCodeHidden) panelCodeDisplay.visibility = View.GONE
+                }
+                override fun onAnimationRepeat(a: android.animation.Animator) {}
+            })
+            set.start()
+            // splash 盖层整体渐隐，露出主页横线接住落点
+            splashLayer.animate().alpha(0f).setDuration(560).start()
         } catch (e: Exception) {
             splashLayer.visibility = View.GONE
         }
