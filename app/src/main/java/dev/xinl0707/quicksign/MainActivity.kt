@@ -28,8 +28,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
-import android.view.animation.AccelerateDecelerateInterpolator
-import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.webkit.GeolocationPermissions
 import android.webkit.WebChromeClient
@@ -1449,7 +1447,7 @@ class MainActivity : Activity() {
     }
 
     /** 淡出启动层（幂等）；页面/登录就绪也会提前调用，但保证至少展示约 2 秒（开屏动画时长），
-     *  之后四位码槽平移到主页四位横线完成衔接过渡 */
+     *  之后整层淡出，四位码槽随层一起消失，不做主页平移衔接 */
     private fun dismissSplash() {
         if (splashDismissed || !::splashLayer.isInitialized) return
         val remain = 2000 - (System.currentTimeMillis() - splashShownAt)
@@ -1459,50 +1457,10 @@ class MainActivity : Activity() {
         }
         splashDismissed = true
         splashAnimSet?.cancel()
-        playSplashToHomeTransition()
-    }
-
-    /** 开屏 → 主页衔接过渡：点亮完成的四位码槽整体平滑平移到主页四位横线位置并渐隐，
-     *  其余开屏元素同步淡出、splash 盖层渐隐露出主页，主页的 "____" 横线正好接住落点，
-     *  形成"四位码从开屏落进键盘区"的联动。主页横线原本隐藏时，过渡结束交还状态机控制。 */
-    private fun playSplashToHomeTransition() {
-        if (!::splashLayer.isInitialized) return
         try {
-            val wasCodeHidden = panelCodeDisplay.visibility != View.VISIBLE
-            if (wasCodeHidden) panelCodeDisplay.visibility = View.VISIBLE
-            // 计算槽行 → 主页四位横线的平移量（中心对齐）
-            val from = IntArray(2)
-            val to = IntArray(2)
-            splashSlotRow.getLocationOnScreen(from)
-            panelCodeDisplay.getLocationOnScreen(to)
-            val dx = (to[0] + panelCodeDisplay.width / 2) - (from[0] + splashSlotRow.width / 2)
-            val dy = (to[1] + panelCodeDisplay.height / 2) - (from[1] + splashSlotRow.height / 2)
-            val glide = ObjectAnimator.ofPropertyValuesHolder(
-                splashSlotRow,
-                PropertyValuesHolder.ofFloat("translationX", 0f, dx.toFloat()),
-                PropertyValuesHolder.ofFloat("translationY", 0f, dy.toFloat())
-            ).setDuration(560).apply { interpolator = DecelerateInterpolator(1.5f) }
-            val rowFade = ObjectAnimator.ofFloat(splashSlotRow, "alpha", 1f, 0f).setDuration(520)
-            val iconFade = ObjectAnimator.ofFloat(splashIcon, "alpha", 1f, 0f).setDuration(420)
-            val titleFade = ObjectAnimator.ofFloat(splashTitle, "alpha", 1f, 0f).setDuration(420)
-            val subFade = ObjectAnimator.ofFloat(splashSub, "alpha", 1f, 0f).setDuration(420)
-            val set = AnimatorSet()
-            set.playTogether(glide, rowFade, iconFade, titleFade, subFade)
-            set.addListener(object : android.animation.Animator.AnimatorListener {
-                override fun onAnimationStart(a: android.animation.Animator) {}
-                override fun onAnimationEnd(a: android.animation.Animator) {
-                    splashLayer.visibility = View.GONE
-                    if (wasCodeHidden) panelCodeDisplay.visibility = View.GONE
-                }
-                override fun onAnimationCancel(a: android.animation.Animator) {
-                    splashLayer.visibility = View.GONE
-                    if (wasCodeHidden) panelCodeDisplay.visibility = View.GONE
-                }
-                override fun onAnimationRepeat(a: android.animation.Animator) {}
-            })
-            set.start()
-            // splash 盖层整体渐隐，露出主页横线接住落点
-            splashLayer.animate().alpha(0f).setDuration(560).start()
+            splashLayer.animate().alpha(0f).setDuration(450)
+                .withEndAction { splashLayer.visibility = View.GONE }
+                .start()
         } catch (e: Exception) {
             splashLayer.visibility = View.GONE
         }
