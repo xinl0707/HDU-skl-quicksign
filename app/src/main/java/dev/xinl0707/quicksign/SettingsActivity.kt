@@ -500,8 +500,6 @@ class SettingsActivity : Activity() {
             b.setOnClickListener {
                 getSharedPreferences("settings", MODE_PRIVATE).edit()
                     .putString(ThemePalette.KEY_STYLE, s).commit()
-                // 桌面图标跟随主题动态切换（activity-alias）
-                ThemeIcon.apply(this, s)
                 // 刷新本页高亮
                 for (bb in styleBtns) {
                     val sel2 = ThemePalette.styleLabel(bb.text.toString()) == ThemePalette.styleLabel(s)
