@@ -2735,31 +2735,48 @@ class MainActivity : Activity() {
             s = Regex("(?i)\\b$en\\b").replace(s, d)
         }
         appendLog("extract 英文替换: ${s.take(200)}")
-        // 3. 只认标准数字字 → 数字流（不映射任何同音字）
-        val digits = StringBuilder()
-        for (ch in s) {
-            when (ch) {
-                in '0'..'9' -> digits.append(ch)
-                '零', '洞' -> digits.append('0')
-                '幺', '一' -> digits.append('1')
-                '二', '两' -> digits.append('2')
-                '三' -> digits.append('3')
-                '四' -> digits.append('4')
-                '五' -> digits.append('5')
-                '六' -> digits.append('6')
-                '七' -> digits.append('7')
-                '八' -> digits.append('8')
-                '九' -> digits.append('9')
-            }
+        // 3. 扫描最长连续标准数字字段（阿拉伯+中文数字字，中间不夹任何非数字字符）
+        val digitSet = setOf('0','1','2','3','4','5','6','7','8','9',
+            '零','洞','幺','一','二','两','三','四','五','六','七','八','九')
+        var bestStart = -1
+        var bestLen = 0
+        var p = 0
+        while (p < s.length) {
+            if (s[p] in digitSet) {
+                val st = p
+                while (p < s.length && s[p] in digitSet) p++
+                val len = p - st
+                if (len > bestLen) { bestLen = len; bestStart = st }
+            } else p++
         }
-        appendLog("extract 数字流: ${digits} (共${digits.length}位)")
-        // 4. 数字流取最后 4 位（报码在句尾，前面的"第3节/签到码"杂数字被自然丢弃）
-        if (digits.length >= 4) {
-            val r = digits.substring(digits.length - 4)
-            appendLog("extract 取末4位 → $r")
+        if (bestLen == 0) {
+            appendLog("extract 无连续数字 → null，交 LLM")
+            return null
+        }
+        val seg = s.substring(bestStart, bestStart + bestLen)
+        appendLog("extract 最长连续数字段: $seg (${bestLen}位)")
+        // 4. 只有恰好连续 4 位才走快速路径；<4 或 >4 一律交 LLM（>4 可能是重复报码被截断，需模型综合判断）
+        if (bestLen == 4) {
+            val r = seg.map { c ->
+                when (c) {
+                    in '0'..'9' -> c
+                    '零','洞' -> '0'
+                    '幺','一' -> '1'
+                    '二','两' -> '2'
+                    '三' -> '3'
+                    '四' -> '4'
+                    '五' -> '5'
+                    '六' -> '6'
+                    '七' -> '7'
+                    '八' -> '8'
+                    '九' -> '9'
+                    else -> c
+                }
+            }.joinToString("")
+            appendLog("extract 连续4位命中 → $r")
             return r
         }
-        appendLog("extract 不足4位 → null，交 LLM")
+        appendLog("extract 连续段${bestLen}位≠4 → null，交 LLM")
         return null
     }
 
