@@ -1280,7 +1280,6 @@ class MainActivity : Activity() {
     private lateinit var splashSlotRow: LinearLayout
     private lateinit var splashSlots: List<View>
     private lateinit var splashTitle: TextView
-    private lateinit var splashSub: TextView
     private var splashAnimSet: AnimatorSet? = null
 
     /** 全屏渐变启动层：主题色渐变 + 光斑 + 图标弹入 + 打卡雷达波纹 + 粒子扩散 +
@@ -1360,7 +1359,7 @@ class MainActivity : Activity() {
 
         splashTitle = TextView(this).apply {
             text = "上课啦"
-            textSize = 20f
+            textSize = 30f
             setTextColor(0xFFFFFFFF.toInt())
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
             gravity = Gravity.CENTER
@@ -1369,17 +1368,7 @@ class MainActivity : Activity() {
         }
         center.addView(splashTitle, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(22) })
-        splashSub = TextView(this).apply {
-            text = "正在加载签到服务"
-            textSize = 13f
-            setTextColor(Color.argb(200, 255, 255, 255))
-            gravity = Gravity.CENTER
-            alpha = 0f
-        }
-        center.addView(splashSub, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
+        ).apply { topMargin = dp(26) })
 
         splashLayer.addView(center, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER
@@ -1425,15 +1414,8 @@ class MainActivity : Activity() {
                 )
                 startDelay = 900
             }
-            // 4. 副标题呼吸
-            val subAnim = ObjectAnimator.ofFloat(splashSub, "alpha", 0f, 1f).setDuration(500)
-            val subBreath = ObjectAnimator.ofFloat(splashSub, "alpha", 0.45f, 1f).setDuration(1100).apply {
-                repeatCount = ValueAnimator.INFINITE
-                repeatMode = ValueAnimator.REVERSE
-                startDelay = 500
-            }
 
-            set.playTogether(iconAlpha, iconZoom, slotAnim, titleAnim, subAnim, subBreath)
+            set.playTogether(iconAlpha, iconZoom, slotAnim, titleAnim)
             splashAnimSet = set
             set.start()
         } catch (e: Exception) {
@@ -1442,7 +1424,6 @@ class MainActivity : Activity() {
             splashIcon.scaleX = 1f
             splashIcon.scaleY = 1f
             splashTitle.alpha = 1f
-            splashSub.alpha = 1f
         }
     }
 
