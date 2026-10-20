@@ -2605,6 +2605,13 @@ class MainActivity : Activity() {
                 // 注意：只认标准数字，不做激进同音字映射（那曾导致安静环境误输出数字）
                 val quick = extractCode(clean)
                 if (quick != null && quick.length == 4) {
+                    // 重复报码被切片截断时，尾部片段（如"八一四七八一四"的"七八一四"）恰好也是连续4位，
+                    // 但它是第二遍报码的尾部不是完整码。若历史转写里出现过包含该4位且更长的连续段 → 交 LLM 综合判断
+                    if (isRepeatedTail(quick)) {
+                        appendLog("extract 命中 $quick 但为重复报码尾部（历史有更长连续段）→ 交 LLM")
+                        maybeLlmExtract()
+                        return
+                    }
                     appendLog("extract 快速路径命中 $quick → 直接提交，跳过 LLM")
                     submitCode(quick)
                     return
@@ -2735,28 +2742,15 @@ class MainActivity : Activity() {
             s = Regex("(?i)\\b$en\\b").replace(s, d)
         }
         appendLog("extract 英文替换: ${s.take(200)}")
-        // 3. 扫描最长连续标准数字字段（阿拉伯+中文数字字，中间不夹任何非数字字符）
-        val digitSet = setOf('0','1','2','3','4','5','6','7','8','9',
-            '零','洞','幺','一','二','两','三','四','五','六','七','八','九')
-        var bestStart = -1
-        var bestLen = 0
-        var p = 0
-        while (p < s.length) {
-            if (s[p] in digitSet) {
-                val st = p
-                while (p < s.length && s[p] in digitSet) p++
-                val len = p - st
-                if (len > bestLen) { bestLen = len; bestStart = st }
-            } else p++
-        }
-        if (bestLen == 0) {
+        // 3. 最长连续标准数字字段（阿拉伯+中文数字字，中间不夹任何非数字字符）
+        val seg = longestDigitSegment(s)
+        if (seg == null) {
             appendLog("extract 无连续数字 → null，交 LLM")
             return null
         }
-        val seg = s.substring(bestStart, bestStart + bestLen)
-        appendLog("extract 最长连续数字段: $seg (${bestLen}位)")
+        appendLog("extract 最长连续数字段: $seg (${seg.length}位)")
         // 4. 只有恰好连续 4 位才走快速路径；<4 或 >4 一律交 LLM（>4 可能是重复报码被截断，需模型综合判断）
-        if (bestLen == 4) {
+        if (seg.length == 4) {
             val r = seg.map { c ->
                 when (c) {
                     in '0'..'9' -> c
@@ -2776,8 +2770,35 @@ class MainActivity : Activity() {
             appendLog("extract 连续4位命中 → $r")
             return r
         }
-        appendLog("extract 连续段${bestLen}位≠4 → null，交 LLM")
+        appendLog("extract 连续段${seg.length}位≠4 → null，交 LLM")
         return null
+    }
+
+    /** 返回转写中最长连续标准数字字字段（原样，未转阿拉伯），无则 null */
+    private fun longestDigitSegment(text: String): String? {
+        val digitSet = setOf('0','1','2','3','4','5','6','7','8','9',
+            '零','洞','幺','一','二','两','三','四','五','六','七','八','九')
+        var bestStart = -1
+        var bestLen = 0
+        var p = 0
+        while (p < text.length) {
+            if (text[p] in digitSet) {
+                val st = p
+                while (p < text.length && text[p] in digitSet) p++
+                val len = p - st
+                if (len > bestLen) { bestLen = len; bestStart = st }
+            } else p++
+        }
+        return if (bestLen == 0) null else text.substring(bestStart, bestStart + bestLen)
+    }
+
+    /** 候选码是否为「重复报码被截断的尾部」：heardPool 某条转写里存在比它更长、且末尾恰为该码的连续数字段 */
+    private fun isRepeatedTail(code: String): Boolean {
+        for (t in heardPool) {
+            val seg = longestDigitSegment(t) ?: continue
+            if (seg.length > 4 && seg.endsWith(code)) return true
+        }
+        return false
     }
 
     private fun stopListening() {
