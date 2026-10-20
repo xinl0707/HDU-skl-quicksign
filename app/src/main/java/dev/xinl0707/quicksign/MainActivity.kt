@@ -181,7 +181,9 @@ class MainActivity : Activity() {
     // 原生签到面板（默认显示，网页隐藏后台加载；需要时点按钮展示网页）
     private lateinit var signPanel: LinearLayout
     private var signPanelWrap: LinearLayout? = null   // 面板外层容器（隐藏它网页才真正全屏）
-    private lateinit var panelCodeDisplay: TextView
+    private lateinit var panelCodeDisplay: LinearLayout   // 四位码槽容器（4 个独立槽）
+    private lateinit var codeLineViews: MutableList<View>       // 槽内横线（未输入时显示）
+    private lateinit var codeDigitViews: MutableList<TextView>  // 槽内数字（输入时弹入）
     private lateinit var toggleWebBtn: Button
     private var signPanelShown = false
 
@@ -594,11 +596,11 @@ class MainActivity : Activity() {
         val titleBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(12), dp(14), dp(4))
+            setPadding(dp(18), dp(14), dp(14), dp(6))
         }
         titleBar.addView(TextView(this).apply {
             text = "上课啦"
-            textSize = 18f
+            textSize = 22f
             setTextColor(TEXT)
             letterSpacing = 0.08f
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
@@ -606,6 +608,9 @@ class MainActivity : Activity() {
         titleBar.addView(backPanelBtn, LinearLayout.LayoutParams(dp(88), dp(38)).apply { rightMargin = dp(8) })
         titleBar.addView(settingsBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
         root.addView(titleBar)
+        // 标题栏下 1dp 主题色分隔线（页面结构更明确）
+        root.addView(View(this).apply { background = roundedBg(HAIRLINE, 1) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
         trace("buildUi titleBar ok")
 
         // 原生签到面板：默认显示（网页隐藏后台加载），内置数字键盘直接输码；
@@ -618,32 +623,33 @@ class MainActivity : Activity() {
         }
         panelTitleText = TextView(this).apply {
             text = "加载中"
-            textSize = 22f
+            textSize = 24f
             setTextColor(SUB)
             gravity = Gravity.CENTER
-            setPadding(dp(0), dp(20), dp(0), dp(2))
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(0), dp(22), dp(0), dp(4))
         }
         signPanel.addView(panelTitleText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // 当前时间（精确到秒，每秒刷新）：主强调色，突出"当下时刻"的签到语境
+        // 当前时间（精确到秒，每秒刷新）：主强调色加粗，突出"当下时刻"的签到语境
         clockText = TextView(this).apply {
-            textSize = 13f
+            textSize = 17f
             setTextColor(ACCENT)
             gravity = Gravity.CENTER
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
-            setPadding(dp(0), dp(0), dp(0), dp(2))
+            setPadding(dp(0), dp(2), dp(0), dp(2))
         }
         signPanel.addView(clockText, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
-        // 经纬度显示（时间下方，N/S/E/W + 度数，原始精度不截断）
+        // 经纬度显示（时间下方，N/S/E/W + 度数，一位小数）
         locDisplayText = TextView(this).apply {
             text = "定位中"
-            textSize = 11f
+            textSize = 12f
             setTextColor(SUB)
             gravity = Gravity.CENTER
-            setPadding(dp(0), dp(0), dp(0), dp(4))
+            setPadding(dp(0), dp(0), dp(0), dp(6))
         }
         signPanel.addView(locDisplayText, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -652,7 +658,7 @@ class MainActivity : Activity() {
         // 当前课程卡片（依据杭电助手订阅课表动态显示；下课后 5 分钟内仍显示该课，防下课点名）
         courseText = TextView(this).apply {
             text = "当前无课"
-            textSize = 17f
+            textSize = 19f
             setTextColor(TEXT)
             gravity = Gravity.CENTER
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
@@ -663,7 +669,7 @@ class MainActivity : Activity() {
         ))
         courseDetailText = TextView(this).apply {
             text = ""
-            textSize = 12f
+            textSize = 13f
             setTextColor(SUB)
             gravity = Gravity.CENTER
             setPadding(dp(0), dp(0), dp(0), dp(10))
@@ -672,17 +678,34 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
-        // 四位码横线区：数字键盘的主焦点。横线间距拉开，数字落下时视觉更分明
-        panelCodeDisplay = TextView(this).apply {
-            textSize = 42f
-            setTextColor(TEXT)
+        // 四位码槽区：4 个独立槽（横线 + 数字），输码时数字逐个弹入、删除弹走——
+        // 签到台的视觉焦点，数字用强调色，横线用正文色（未输入时显示）
+        panelCodeDisplay = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            includeFontPadding = false   // 去掉字体上下内边距，数字与横线更贴近、视觉更居中
-            letterSpacing = 0.24f
-            setPadding(dp(0), dp(10), dp(0), dp(10))
-            text = "____"
-            // 签到界面加载完成（signReady）前隐藏四位横线，配合键盘区域的加载动画
-            visibility = View.GONE
+            visibility = View.GONE   // 签到界面加载完成（signReady）前隐藏，配合键盘区域的加载动画
+        }
+        codeLineViews = mutableListOf()
+        codeDigitViews = mutableListOf()
+        for (i in 0 until 4) {
+            val slot = FrameLayout(this)
+            val line = View(this).apply { background = roundedBg(TEXT, 3) }
+            slot.addView(line, FrameLayout.LayoutParams(dp(44), dp(4), Gravity.CENTER))
+            val digit = TextView(this).apply {
+                textSize = 42f
+                setTextColor(ACCENT)
+                gravity = Gravity.CENTER
+                includeFontPadding = false   // 去掉字体上下内边距，数字与槽更贴近、视觉更居中
+                setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+                visibility = View.INVISIBLE
+            }
+            slot.addView(digit, FrameLayout.LayoutParams(dp(52), dp(56), Gravity.CENTER))
+            codeLineViews.add(line)
+            codeDigitViews.add(digit)
+            panelCodeDisplay.addView(slot, LinearLayout.LayoutParams(dp(58), dp(58)).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            })
         }
         signPanel.addView(panelCodeDisplay, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -706,7 +729,7 @@ class MainActivity : Activity() {
         panelKeyGrid = GridLayout(this).apply {
             columnCount = 3
             rowCount = 4
-            setPadding(dp(20), dp(8), dp(20), dp(8))
+            setPadding(dp(16), dp(6), dp(16), dp(6))
             // 签到界面加载完成（signReady）前不显示键盘：避免未就绪时误输码/误触发
             visibility = View.GONE
         }
@@ -721,10 +744,10 @@ class MainActivity : Activity() {
                     else -> d
                 },
                 if (d == "del" || d == "clear") LIGHT else KEY_BG,
-                if (isDigit) KEY_TEXT else TEXT, big = true, radius = 18
+                if (isDigit) KEY_TEXT else TEXT, big = true, radius = 22
             )
-            // 数字键字号加大，退格/清除适中；数字键用键盘专用文字色
-            b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, if (isDigit) 26f else 17f)
+            // 数字键大号加粗，退格/清除克制：签到台的主操作是数字
+            b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, if (isDigit) 28f else 16f)
             b.setTypeface(if (isDigit) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT)
             b.setOnClickListener {
                 vibrate(25)   // 输入数字时清脆短震
@@ -732,9 +755,9 @@ class MainActivity : Activity() {
             }
             val lp = GridLayout.LayoutParams()
             lp.width = 0
-            lp.height = dp(58)
+            lp.height = dp(62)
             lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1, 1f)
-            lp.setMargins(dp(6), dp(5), dp(6), dp(5))
+            lp.setMargins(dp(5), dp(4), dp(5), dp(4))
             panelKeyGrid!!.addView(b, lp)
         }
         keyWrap.addView(panelKeyGrid, FrameLayout.LayoutParams(
@@ -748,7 +771,7 @@ class MainActivity : Activity() {
         toggleWebBtn.setOnClickListener { toggleWebView() }
         signPanel.addView(toggleWebBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { leftMargin = dp(20); rightMargin = dp(20); topMargin = dp(4); bottomMargin = dp(6) })
+        ).apply { leftMargin = dp(16); rightMargin = dp(16); topMargin = dp(6); bottomMargin = dp(8) })
 
         val signPanelWrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -779,7 +802,7 @@ class MainActivity : Activity() {
         }
         val statusBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = roundedBg(CARD, 12)
+            background = roundedBg(CARD, 16)
             setPadding(dp(14), dp(9), dp(14), dp(9))
             addView(statusText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
@@ -801,7 +824,7 @@ class MainActivity : Activity() {
             textSize = 11f
             setTextColor(ACCENT)
             setPadding(dp(12), dp(5), dp(12), dp(5))
-            background = roundedBg(INFO_BG, 12)
+            background = roundedBg(INFO_BG, 14)
             text = "识别内容：暂无 · 点按展开"
         }
         val infoWrap = LinearLayout(this).apply {
@@ -847,8 +870,8 @@ class MainActivity : Activity() {
         val bigCard = LinearLayout(this)
         bigCard.orientation = LinearLayout.VERTICAL
         bigCard.gravity = Gravity.CENTER
-        bigCard.background = roundedBg(CARD, 28)
-        bigCard.setPadding(dp(48), dp(32), dp(48), dp(32))
+        bigCard.background = roundedBg(CARD, 30)
+        bigCard.setPadding(dp(48), dp(34), dp(48), dp(34))
         bigCodeText = TextView(this)
         // 固定大字号 + 强制单行：80sp 下 4 位数字一行放下，清晰醒目
         bigCodeText.textSize = 80f
@@ -865,7 +888,7 @@ class MainActivity : Activity() {
         hint.textSize = 15f
         hint.setTextColor(SUB)
         hint.gravity = Gravity.CENTER
-        hint.setPadding(dp(0), dp(14), dp(0), dp(0))
+        hint.setPadding(dp(0), dp(16), dp(0), dp(0))
         bigCard.addView(hint, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -891,10 +914,11 @@ class MainActivity : Activity() {
         val resultCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            background = roundedBg(CARD, 28)
-            setPadding(dp(30), dp(28), dp(30), dp(26))
+            background = roundedBg(CARD, 30)
+            setPadding(dp(30), dp(30), dp(30), dp(26))
         }
-        // 成功徽章：圆形强调色底 + 白色对勾（印章感）
+        // 成功徽章：印章感——外层 SUCCESS 圆 + 内圈白圆 + SUCCESS 对勾（反色印章）
+        val badgeWrap = FrameLayout(this)
         val badge = TextView(this).apply {
             text = "✓"
             textSize = 42f
@@ -903,14 +927,15 @@ class MainActivity : Activity() {
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
             background = roundedBg(SUCCESS, 100)
         }
-        resultCard.addView(badge, LinearLayout.LayoutParams(dp(74), dp(74)))
+        badgeWrap.addView(badge, FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER))
+        resultCard.addView(badgeWrap, LinearLayout.LayoutParams(dp(86), dp(86)))
         val resultTitle = TextView(this).apply {
             text = "签到成功"
-            textSize = 27f
+            textSize = 30f
             gravity = Gravity.CENTER
             setTextColor(TEXT)
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
-            setPadding(dp(0), dp(16), dp(0), dp(0))
+            setPadding(dp(0), dp(12), dp(0), dp(0))
         }
         resultCard.addView(resultTitle, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -924,16 +949,17 @@ class MainActivity : Activity() {
         resultCard.addView(resultCourseText, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        // 考勤统计卡片
+        // 考勤统计卡片（回执式明细：标题用强调色，数值区层次分明）
         val statsCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBg(LIGHT, 16)
+            background = roundedBg(LIGHT, 20)
             setPadding(dp(16), dp(14), dp(16), dp(14))
         }
         statsCard.addView(TextView(this).apply {
             text = "学勤预警"
             textSize = 12f
-            setTextColor(SUB)
+            setTextColor(ACCENT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -975,7 +1001,7 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         // 返回签到按钮：关闭覆盖页 → 回签到页继续
-        val backBtn = button("返回签到", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        val backBtn = button("返回签到", ACCENT, 0xFFFFFFFF.toInt(), big = true, radius = 18)
         backBtn.setOnClickListener { dismissSignResultOverlay() }
         resultCard.addView(backBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -999,9 +1025,18 @@ class MainActivity : Activity() {
         val invalidCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            background = roundedBg(CARD, 28)
+            background = roundedBg(CARD, 30)
             setPadding(dp(48), dp(34), dp(48), dp(32))
         }
+        // 警示图标：圆形警示色底 + 白色感叹号（比纯文字更有辨识度）
+        invalidCard.addView(TextView(this).apply {
+            text = "!"
+            textSize = 34f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            background = roundedBg(DANGER, 100)
+        }, LinearLayout.LayoutParams(dp(56), dp(56)))
         invalidCard.addView(TextView(this).apply {
             text = "签到码无效"
             textSize = 40f
@@ -1009,6 +1044,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setTextColor(DANGER)
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(0), dp(18), dp(0), dp(0))
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -1021,7 +1057,7 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        val retryBtn = button("重新输入", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        val retryBtn = button("重新输入", ACCENT, 0xFFFFFFFF.toInt(), big = true, radius = 18)
         retryBtn.setOnClickListener { dismissInvalidOverlay() }
         invalidCard.addView(retryBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1112,13 +1148,13 @@ class MainActivity : Activity() {
         // ---------- 第一步：免责声明卡片 ----------
         val dCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBg(CARD, 20)
+            background = roundedBg(CARD, 24)
             setPadding(dp(22), dp(20), dp(22), dp(18))
         }
         disclaimerCard = dCard
         dCard.addView(TextView(this).apply {
             text = "免责声明"
-            textSize = 20f
+            textSize = 24f
             gravity = Gravity.CENTER
             setTextColor(TEXT)
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
@@ -1128,9 +1164,9 @@ class MainActivity : Activity() {
         val dScroll = ScrollView(this)
         dScroll.addView(TextView(this).apply {
             text = DISCLAIMER_TEXT_TEMPLATE.replace("__VER__", appVersion())
-            textSize = 13f
+            textSize = 14f
             setTextColor(TEXT)
-            setLineSpacing(dp(2).toFloat(), 1.15f)
+            setLineSpacing(dp(2).toFloat(), 1.2f)
             setTextIsSelectable(true)
         }, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1139,11 +1175,11 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, dp(430)
         ))
         val dBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val disagreeBtn = button("不同意", LIGHT, 0xFFFA5151.toInt(), big = true)
+        val disagreeBtn = button("不同意", LIGHT, 0xFFFA5151.toInt(), big = true, radius = 18)
         disagreeBtn.setOnClickListener {
             finish()   // 不同意：自动退出
         }
-        val agreeBtn = button("同意", LIGHT, SUB, big = true)   // 初始灰色；滑到底才变高亮
+        val agreeBtn = button("同意", LIGHT, SUB, big = true, radius = 18)   // 初始灰色；滑到底才变高亮
         agreeBtn.setOnClickListener {
             // 未滑动到底：灰色点击 → 提示滑动到底阅读全文
             val maxReach = (dScroll.getChildAt(0)?.height ?: 0) - dScroll.height
@@ -1173,7 +1209,7 @@ class MainActivity : Activity() {
         dScroll.setOnScrollChangeListener { _, _, scrollY, _, _ ->
             val max = (dScroll.getChildAt(0)?.height ?: 0) - dScroll.height
             val reached = scrollY >= max - 20
-            agreeBtn.background = roundedBg(if (reached) ACCENT else LIGHT, 12)
+            agreeBtn.background = roundedBg(if (reached) ACCENT else LIGHT, 18)
             agreeBtn.setTextColor(if (reached) 0xFFFFFFFF.toInt() else SUB)
         }
         ov.addView(dCard, FrameLayout.LayoutParams(
@@ -1184,14 +1220,14 @@ class MainActivity : Activity() {
         // ---------- 第二步：权限卡片（同意后切换） ----------
         val pCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBg(CARD, 20)
+            background = roundedBg(CARD, 24)
             setPadding(dp(22), dp(20), dp(22), dp(18))
             visibility = View.GONE
         }
         permCard = pCard
         pCard.addView(TextView(this).apply {
             text = "权限说明"
-            textSize = 20f
+            textSize = 24f
             gravity = Gravity.CENTER
             setTextColor(TEXT)
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
@@ -1200,14 +1236,14 @@ class MainActivity : Activity() {
         ))
         pCard.addView(TextView(this).apply {
             text = "本 App 需要以下权限才能正常签到：\n\n· 麦克风：语音识别签到码自动输入\n· 定位：签到功能需要精准定位\n\n权限仅用于核心功能，不会用于其他用途。"
-            textSize = 13f
+            textSize = 14f
             setTextColor(TEXT)
-            setLineSpacing(dp(2).toFloat(), 1.2f)
+            setLineSpacing(dp(2).toFloat(), 1.25f)
             setPadding(dp(0), dp(14), dp(0), dp(14))
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        val grantBtn = button("授予权限", ACCENT, 0xFFFFFFFF.toInt(), big = true)
+        val grantBtn = button("授予权限", ACCENT, 0xFFFFFFFF.toInt(), big = true, radius = 18)
         grantBtn.setOnClickListener {
             // 弹系统授权弹窗；被拒绝/失败可再次点击重新激活
             val need = mutableListOf<String>()
@@ -1231,7 +1267,7 @@ class MainActivity : Activity() {
         pCard.addView(guidePermHint, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        guideNextBtn = button("下一步", LIGHT, TEXT, big = true)
+        guideNextBtn = button("下一步", LIGHT, TEXT, big = true, radius = 18)
         guideNextBtn!!.isEnabled = false
         guideNextBtn!!.setOnClickListener {
             ov.visibility = View.GONE   // 关闭引导层
@@ -1592,9 +1628,26 @@ class MainActivity : Activity() {
         toggleWebBtn.text = "返回签到页"
     }
 
+    /** 刷新四位码槽：已输入位显示数字（弹入动效）+ 横线隐去，未输入位显示横线 */
     private fun updatePanelDisplay() {
-        val shown = manualCode.padEnd(4, '_')
-        panelCodeDisplay.text = shown
+        for (i in 0 until 4) {
+            val ch = if (i < manualCode.length) manualCode[i].toString() else ""
+            val d = codeDigitViews[i]
+            val l = codeLineViews[i]
+            if (ch.isEmpty()) {
+                d.visibility = View.INVISIBLE
+                l.alpha = 1f
+            } else {
+                d.text = ch
+                d.visibility = View.VISIBLE
+                l.alpha = 0f
+                // 数字落入槽：轻微放大淡入，删除后重新输入也有反馈
+                d.scaleX = 1.25f
+                d.scaleY = 1.25f
+                d.alpha = 0.5f
+                d.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(160).start()
+            }
+        }
     }
 
     /**
@@ -2059,12 +2112,7 @@ class MainActivity : Activity() {
                     clearedOnceForPage = true
                     evalJs(SignInjector.JS_CLEAR_SITE_CODE) { _ -> }
                 }
-                // 再次进入签到页时，恢复面板输入态（上次签到完成后显示"签到完成"）
-                if (signPanelShown && panelCodeDisplay.text == "签到完成") {
-                    manualCode = ""
-                    updatePanelDisplay()
-                    toggleWebBtn.text = "查看网页"
-                }
+                // （原"签到完成"文字判断为历史残留，槽结构下无此状态，不再执行）
                 prevSigned = false
                 if (signPageFirstSeenAt == 0L) signPageFirstSeenAt = System.currentTimeMillis()
                 if (sign && !loc && loginOk) {
@@ -2242,10 +2290,7 @@ class MainActivity : Activity() {
                         appendLog("probe ok")
                         // SSO 桌面端登录已回跳，恢复签到站点的移动 UA
                         applyUAFor(SignInjector.HOME_URL)
-                        // 已签到成功则保持"签到完成"状态，不覆盖
-                        if (panelCodeDisplay.text != "签到完成") {
-                            statusText.text = "签到就绪（已登录）"
-                        }
+                        statusText.text = "签到就绪（已登录）"
                         // 仅当页面刚走完登录流程时切回键盘面板（自动提交或手动点击登录后回跳签到页）；
                         // 用户主动看网页（如提交后看签到结果）时保持网页不切换
                         if (wasOnLoginPage || loginFlowPending) {

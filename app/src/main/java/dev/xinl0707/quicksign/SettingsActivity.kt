@@ -221,15 +221,15 @@ class SettingsActivity : Activity() {
             textSize = 15f
             setTextColor(TEXT)
             setHintTextColor(HINT)
-            background = roundedBg(CARD, 12)
+            background = roundedBg(CARD, 14)
             setPadding(dp(12), dp(10), dp(12), dp(10))
             setText(credStore.username() ?: "")
         }
 
-    /** 分块卡片容器（圆角背景 + 内边距，视觉分组） */
+    /** 分块卡片容器（圆角背景 + 内边距，视觉分组；标题行带主题色条） */
     private fun block(title: String): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = roundedBg(CARD, 16)
+        background = roundedBg(CARD, 20)
         setPadding(dp(14), dp(12), dp(14), dp(12))
         addView(TextView(this@SettingsActivity).apply {
             text = title
@@ -279,13 +279,14 @@ class SettingsActivity : Activity() {
         }
         val title = TextView(this).apply {
             text = "设置"
-            textSize = 18f
+            textSize = 20f
             setTextColor(TEXT)
             gravity = Gravity.CENTER
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         titleRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         // 右上角保存按钮（原"操作"块里的保存设置移到这里，操作块只留登录/清除）
-        val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 14)
+        val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
         saveTop.setOnClickListener { save() }
         titleRow.addView(saveTop, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(titleRow, LinearLayout.LayoutParams(
@@ -454,7 +455,7 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(2) })
         val importRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val importBtn = button("导入课表（.ICS）", LIGHT, ACCENT, big = true)
+        val importBtn = button("导入课表（.ICS）", LIGHT, ACCENT, big = true, radius = 18)
         importBtn.setOnClickListener { pickIcsFile() }
         importRow.addView(importBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         importRow.addView(TextView(this).apply {
@@ -485,33 +486,55 @@ class SettingsActivity : Activity() {
         val styleBlock = block("界面风格")
         styleBlock.addView(label("选择界面风格"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(6) })
+        ).apply { bottomMargin = dp(8) })
         val styleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val styleBtns = mutableListOf<Button>()
+        val styleCards = mutableListOf<LinearLayout>()
+        // 色板卡片：每个主题 = 强调色圆点 + 名字，选中时整卡变强调色底、圆点变白（直观看到主题主色）
+        fun refreshStyleCards(selectedStyle: String) {
+            for (i in ThemePalette.STYLES.indices) {
+                val s = ThemePalette.STYLES[i]
+                val sel = s == selectedStyle
+                val accent = ThemePalette.palette(s, isNight).accent
+                val c = styleCards[i]
+                c.background = roundedBg(if (sel) accent else LIGHT, 14)
+                c.elevation = if (sel) dp(3).toFloat() else 0f
+                (c.getChildAt(0) as View).background = roundedBg(if (sel) 0xFFFFFFFF.toInt() else accent, 100)
+                (c.getChildAt(1) as TextView).setTextColor(if (sel) 0xFFFFFFFF.toInt() else TEXT)
+            }
+        }
         val curStyle = themeStyle()
         for (s in ThemePalette.STYLES) {
+            val accent = ThemePalette.palette(s, isNight).accent
             val sel = s == curStyle
-            val b = button(
-                ThemePalette.styleLabel(s),
-                if (sel) ACCENT else LIGHT,
-                if (sel) 0xFFFFFFFF.toInt() else TEXT,
-                radius = 10
-            )
-            b.setOnClickListener {
-                getSharedPreferences("settings", MODE_PRIVATE).edit()
-                    .putString(ThemePalette.KEY_STYLE, s).commit()
-                // 刷新本页高亮
-                for (bb in styleBtns) {
-                    val sel2 = ThemePalette.styleLabel(bb.text.toString()) == ThemePalette.styleLabel(s)
-                    bb.background = roundedBg(if (sel2) ACCENT else LIGHT, 10)
-                    bb.setTextColor(if (sel2) 0xFFFFFFFF.toInt() else TEXT)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                background = roundedBg(if (sel) accent else LIGHT, 14)
+                elevation = if (sel) dp(3).toFloat() else 0f
+                setPadding(dp(6), dp(10), dp(6), dp(8))
+                setOnClickListener {
+                    getSharedPreferences("settings", MODE_PRIVATE).edit()
+                        .putString(ThemePalette.KEY_STYLE, s).commit()
+                    refreshStyleCards(s)
+                    toast("已切换，返回主界面后生效")
                 }
-                toast("已切换，返回主界面后生效")
             }
-            styleBtns.add(b)
+            card.addView(View(this).apply {
+                background = roundedBg(if (sel) 0xFFFFFFFF.toInt() else accent, 100)
+            }, LinearLayout.LayoutParams(dp(24), dp(24)))
+            card.addView(TextView(this).apply {
+                text = ThemePalette.styleLabel(s)
+                textSize = 12f
+                setTextColor(if (sel) 0xFFFFFFFF.toInt() else TEXT)
+                gravity = Gravity.CENTER
+                setPadding(dp(0), dp(7), dp(0), dp(0))
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+            styleCards.add(card)
             val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            if (styleBtns.size > 1) lp.leftMargin = dp(6)
-            styleRow.addView(b, lp)
+            if (styleCards.size > 1) lp.leftMargin = dp(6)
+            styleRow.addView(card, lp)
         }
         styleBlock.addView(styleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -537,7 +560,7 @@ class SettingsActivity : Activity() {
         // ========== 操作块 ==========
         val actionBlock = block("操作")
         // "保存并登录"已与右上角"保存"合并（保存后返回主界面即自动登录），操作块只保留清除账号
-        val clearBtn = button("清除账号", LIGHT, 0xFFFA5151.toInt(), big = true)
+        val clearBtn = button("清除账号", LIGHT, 0xFFFA5151.toInt(), big = true, radius = 18)
         clearBtn.setOnClickListener {
             credStore.clear()
             userInput.setText("")
@@ -569,7 +592,7 @@ class SettingsActivity : Activity() {
             setTextIsSelectable(true)
             setTextColor(SUB)
             visibility = if (credStore.debugEnabled()) View.VISIBLE else View.GONE
-            background = roundedBg(LIGHT, 10)
+            background = roundedBg(LIGHT, 12)
             setPadding(dp(8), dp(6), dp(8), dp(6))
         }
         debugBlock.addView(logText, LinearLayout.LayoutParams(
