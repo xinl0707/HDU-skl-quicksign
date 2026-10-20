@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 朱砂·国潮主题图标前景：白色签到对勾 + 鎏金打卡圆点（透明底，背景色由 adaptive icon 提供） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 白色大对勾（签到完成），圆头粗线条 -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="11"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M31,56 L49,74 L79,37" />
+    <!-- 对勾尾部鎏金打卡圆点（国潮朱砂配鎏金） -->
+    <path
+        android:fillColor="#E8C36A"
+        android:pathData="M79,37 m-5.5,0 a5.5,5.5 0 1,1 11,0 a5.5,5.5 0 1,1 -11,0" />
+</vector>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 5 套主题的应用图标底色（自适应图标背景层） -->
+<resources>
+    <color name="ic_bg_default">#3B71FE</color>
+    <color name="ic_bg_guochao">#B8432C</color>
+    <color name="ic_bg_wood">#A8732F</color>
+    <color name="ic_bg_graphite">#23272E</color>
+    <color name="ic_bg_aurora">#0FAF7E</color>
+</resources>

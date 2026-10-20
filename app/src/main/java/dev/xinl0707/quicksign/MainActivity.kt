@@ -352,6 +352,8 @@ class MainActivity : Activity() {
             trace("before buildUi")
             buildUi()
             trace("after buildUi")
+            // 应用当前主题对应的桌面图标（activity-alias 动态切换；设置页切换或开机同步）
+            ThemeIcon.apply(this, themeStyle())
             // 首次启动：免责声明 + 权限引导（只弹一次；已同意过直接跳过）
             if (!credStore.disclaimerAccepted()) {
                 showGuideOverlay()
