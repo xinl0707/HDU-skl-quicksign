@@ -1987,14 +1987,17 @@ class MainActivity : Activity() {
         if (resultWatchActive && !signResultShown) {
             if (curUrl.contains("#/sign/in/detail")) {
                 resultWatchActive = false
+                appendLog("result watch: URL 已跳 detail → 判定成功")
                 onSignSucceeded()
             } else if (!invalidShown && System.currentTimeMillis() - resultWatchStartAt > 5000) {
                 invalidShown = true
                 invalidShownAt = System.currentTimeMillis()
+                appendLog("result watch: 5s 未跳 detail → 弹无效弹窗（后台继续缓冲 3s）")
                 showInvalidOverlay()
             } else if (invalidShown && System.currentTimeMillis() - invalidShownAt > 3000) {
                 // 缓冲 3 秒结束仍无跳转：停止自动检测，维持无效弹窗，等用户点「重新输入」
                 resultWatchActive = false
+                appendLog("result watch: 缓冲 3s 结束仍无跳转 → 停止检测，维持无效弹窗")
             }
         }
         evalJs(SignInjector.JS_DETECT_STATE) { raw ->
@@ -2374,6 +2377,7 @@ class MainActivity : Activity() {
         }
         filling = true
         stopListening()
+        appendLog("submit: 提交 $code，已停监听（filling=true）")
         lastFilledCode = code
         lastSubmitAt = System.currentTimeMillis()   // 结果判定窗口起点：URL 跳 detail = 成功，10 秒未跳 = 无效
         resultWatchActive = true
@@ -2395,6 +2399,7 @@ class MainActivity : Activity() {
             filling = false
             resultWatchActive = false   // 输入超时：取消结果监听（不是签到码无效）
             statusText.text = "自动输入超时，请手动输入"
+            appendLog("fill 超时: 60 次轮询无网页确认，改手动")
             toast("自动输入超时，请手动输入")
             dismissBigCodeOverlay()
             return
@@ -2405,6 +2410,7 @@ class MainActivity : Activity() {
                     filling = false
                     statusText.text = "已输入签到码，等待签到结果…"
                     addSpeechInfo("输入", "自动输入 $lastFilledCode 完成，等待签到结果")
+                    appendLog("fill ok: $lastFilledCode 网页已确认输入（第${attempt}次轮询）")
                     // 网页已确认输入完成：收起大数字浮层（彩带停止），键盘位显示大转圈过渡等结果判定
                     dismissBigCodeOverlay()
                     showResultWaiting()
@@ -2421,12 +2427,14 @@ class MainActivity : Activity() {
                     if (u.contains("#/sign/in/detail") || signResultShown) {
                         filling = false
                         dismissBigCodeOverlay()
+                        appendLog("fill fail 但已跳 detail → 视为成功，静默收尾")
                     } else {
                         filling = false
                         resultWatchActive = false   // 注入失败：取消结果监听
                         val reason = res.removePrefix("fail:")
                         statusText.text = "自动输入失败（$reason），请手动输入"
                         addSpeechInfo("输入", "自动输入失败：$reason")
+                        appendLog("fill fail: $reason")
                         toast("自动输入失败，请手动输入或直接在页面上操作")
                         dismissBigCodeOverlay()
                     }
@@ -2589,7 +2597,7 @@ class MainActivity : Activity() {
                     maybeLlmExtract()
                     return
                 }
-                appendLog("mimo slice $mimoSliceCount: ${clean.take(80)}")
+                appendLog("mimo slice $mimoSliceCount: ${clean.take(200)}")
                 addSpeechInfo("MIMO", "切片 $mimoSliceCount 转写：$clean")
                 heardPool.addLast(clean)
                 while (heardPool.size > 10) heardPool.removeFirst()
@@ -2597,6 +2605,7 @@ class MainActivity : Activity() {
                 // 注意：只认标准数字，不做激进同音字映射（那曾导致安静环境误输出数字）
                 val quick = extractCode(clean)
                 if (quick != null && quick.length == 4) {
+                    appendLog("extract 快速路径命中 $quick → 直接提交，跳过 LLM")
                     submitCode(quick)
                     return
                 }
@@ -2645,11 +2654,13 @@ class MainActivity : Activity() {
         if (combined.isBlank()) return
         val eng = mimoEngine ?: return
         llmExtractBusy = true
-        appendLog("llm extract${if (llmExtractFirst) " (首次)" else ""}: ${combined.take(120)}")
-        eng.extractSignCode(combined, llmExtractFirst) { code ->
+        appendLog("llm extract${if (llmExtractFirst) " (首次)" else ""}: 输入${heardPool.size}条转写 = ${combined.take(300)}")
+        eng.extractSignCode(combined, llmExtractFirst) { code, raw ->
             llmExtractBusy = false
             llmExtractFirst = false   // 首次提示词只用于第一轮，之后都用累积提示词
             if (epochStale() || filling) return@extractSignCode
+            // 模型原始输出全文必记：4 位码 / "无" / 乱码都可回溯
+            appendLog("llm raw: ${raw?.take(200) ?: "(无输出/异常)"}")
             if (code != null) {
                 appendLog("llm code: $code")
                 addSpeechInfo("综合", "判断为签到码 $code")
@@ -2704,12 +2715,17 @@ class MainActivity : Activity() {
      * 剔除语气词；同音字归一化（"五百二斤"→5827 等）全部交给 flash 语义判断。
      */
     private fun extractCode(text: String): String? {
-        if (text.isBlank()) return null
+        if (text.isBlank()) {
+            appendLog("extract 空输入 → null")
+            return null
+        }
+        appendLog("extract 原文: ${text.take(200)}")
         // 1. 剔除语气词/助词（不参与数字映射）
         var s = text
         for (ch in charArrayOf('啊', '哦', '嗯', '呢', '嘛', '的', '了', '个', '是', '呀', '啦', '哈', '喂', '诶', '好')) {
             s = s.replace(ch.toString(), "")
         }
+        appendLog("extract 剔除语气词: ${s.take(200)}")
         // 2. 英文数字单词 → 阿拉伯
         val enMap = mapOf(
             "zero" to "0", "one" to "1", "two" to "2", "three" to "3", "four" to "4",
@@ -2718,11 +2734,8 @@ class MainActivity : Activity() {
         for ((en, d) in enMap) {
             s = Regex("(?i)\\b$en\\b").replace(s, d)
         }
+        appendLog("extract 英文替换: ${s.take(200)}")
         // 3. 只认标准数字字 → 数字流（不映射任何同音字）
-        val digitChars = setOf(
-            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-            '零', '洞', '幺', '一', '二', '两', '三', '四', '五', '六', '七', '八', '九'
-        )
         val digits = StringBuilder()
         for (ch in s) {
             when (ch) {
@@ -2739,8 +2752,14 @@ class MainActivity : Activity() {
                 '九' -> digits.append('9')
             }
         }
+        appendLog("extract 数字流: ${digits} (共${digits.length}位)")
         // 4. 数字流取最后 4 位（报码在句尾，前面的"第3节/签到码"杂数字被自然丢弃）
-        if (digits.length >= 4) return digits.substring(digits.length - 4)
+        if (digits.length >= 4) {
+            val r = digits.substring(digits.length - 4)
+            appendLog("extract 取末4位 → $r")
+            return r
+        }
+        appendLog("extract 不足4位 → null，交 LLM")
         return null
     }
 

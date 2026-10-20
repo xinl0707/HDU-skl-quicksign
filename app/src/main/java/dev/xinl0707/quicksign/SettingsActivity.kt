@@ -594,6 +594,9 @@ class SettingsActivity : Activity() {
             visibility = if (credStore.debugEnabled()) View.VISIBLE else View.GONE
             background = roundedBg(LIGHT, 12)
             setPadding(dp(8), dp(6), dp(8), dp(6))
+            // 日志可滚动：设置内部滚动方式 + 显示滚动条（外层 ScrollView 不吞 TextView 手势）
+            movementMethod = android.text.method.ScrollingMovementMethod()
+            isVerticalScrollBarEnabled = true
         }
         debugBlock.addView(logText, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(160)
@@ -636,11 +639,17 @@ class SettingsActivity : Activity() {
 
         setContentView(scroll)
 
-        // 日志定时刷新（1 秒）
+        // 日志定时刷新（1 秒）：内容未变化不重设（避免打断用户正在滚动查看的位置）；
+        // 内容变化时保持原滚动位置，新日志追加在尾部，用户在底部时自然看到新内容
         handler.post(object : Runnable {
             override fun run() {
                 if (logText.visibility == View.VISIBLE) {
-                    logText.text = DebugLog.dump()
+                    val dump = DebugLog.dump()
+                    if (dump != logText.text.toString()) {
+                        val sy = logText.scrollY
+                        logText.text = dump
+                        logText.scrollTo(0, sy)
+                    }
                 }
                 handler.postDelayed(this, 1000)
             }

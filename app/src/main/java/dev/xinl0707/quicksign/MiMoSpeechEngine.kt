@@ -91,7 +91,11 @@ class MiMoSpeechEngine(
      * first=true 使用"首次判断"提示词；之后用"累积判断"提示词（都写清 10s/3s 重叠 7 秒切片机制）。
      * 成功返回 4 位纯数字，否则返回 null（异步回调在主线程）。
      */
-    fun extractSignCode(context: String, first: Boolean, cb: (String?) -> Unit) {
+    /**
+     * flash 综合判断 4 位签到码。回调第一个参数为校验通过的 4 位码（无则 null）；
+     * 第二个参数为模型原始输出全文（用于调试日志——即使模型输出"无"或乱码也要能查到）。
+     */
+    fun extractSignCode(context: String, first: Boolean, cb: (String?, String?) -> Unit) {
         Thread {
             try {
                 val sys = if (first) {
@@ -130,6 +134,7 @@ class MiMoSpeechEngine(
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 conn.doOutput = true
                 var out: String? = null
+                var raw: String? = null   // 模型原始输出全文（调试日志用：模型输出"无"/乱码也要可查）
                 try {
                     conn.outputStream.write(payload.toString().toByteArray(Charsets.UTF_8))
                     val code = conn.responseCode
@@ -146,15 +151,16 @@ class MiMoSpeechEngine(
                             ?.optJSONObject("message")
                             ?.optString("content", "")
                             ?.trim()
+                        raw = content
                         out = if (content != null && content.length == 4 && content.all { it.isDigit() }) content else null
                     }
                 } finally {
                     conn.disconnect()
                 }
                 val final = out
-                mainHandler.post { cb(final) }
+                mainHandler.post { cb(final, raw) }
             } catch (e: Exception) {
-                mainHandler.post { cb(null) }
+                mainHandler.post { cb(null, null) }
             }
         }.apply { start() }
     }
