@@ -199,13 +199,14 @@ class SignRecordsActivity : Activity() {
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
         ).apply { marginStart = dp(10); marginEnd = dp(10) })
         val methodTag = TextView(this).apply {
-            text = if (rec.method == SignRecord.METHOD_VOICE) "语音签到" else "键盘签到"
+            text = if (rec.method == SignRecord.METHOD_VOICE) "语音\n签到" else "键盘\n签到"
             textSize = 13f
             setTextColor(ACCENT)
             gravity = Gravity.CENTER
             background = roundedBg(LIGHT, 100)
-            setPadding(dp(12), dp(5), dp(12), dp(5))
+            setPadding(dp(10), dp(5), dp(10), dp(5))
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setLineSpacing(0f, 1.05f)
         }
         row1.addView(methodTag, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
