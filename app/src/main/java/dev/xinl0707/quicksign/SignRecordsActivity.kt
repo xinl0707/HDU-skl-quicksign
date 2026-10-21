@@ -45,6 +45,12 @@ class SignRecordsActivity : Activity() {
     private fun dp(v: Number): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
+    /** 状态栏高度（edge-to-edge 下内容需避让，targetSdk 37 强制） */
+    private fun statusBarHeight(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
+    }
+
     private fun roundedBg(color: Int, radius: Int): android.graphics.drawable.GradientDrawable =
         android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
@@ -70,7 +76,7 @@ class SignRecordsActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
-            setPadding(dp(16), dp(16), dp(16), dp(10))
+            setPadding(dp(16), dp(16) + statusBarHeight(), dp(16), dp(10))
         }
 
         // ========== 顶栏：返回 + 标题 + 记录数 ==========
@@ -181,14 +187,30 @@ class SignRecordsActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { marginEnd = dp(8) })
         row1.addView(TextView(this).apply {
-            text = rec.courseName.ifEmpty { "——" }
-            textSize = 16f
-            setTextColor(TEXT)
+            text = rec.courseName.ifEmpty { "课程名未知" }
+            textSize = if (rec.courseName.isEmpty()) 13f else 16f
+            setTextColor(if (rec.courseName.isEmpty()) SUB else TEXT)
             gravity = Gravity.CENTER_VERTICAL
-            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setTypeface(
+                if (rec.courseName.isEmpty()) android.graphics.Typeface.DEFAULT
+                else android.graphics.Typeface.DEFAULT_BOLD
+            )
         }, LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
         ))
+        // 签到方式圆角标签（与状态徽标同风格，放右侧；语音签到 / 键盘签到）
+        val methodTag = TextView(this).apply {
+            text = if (rec.method == SignRecord.METHOD_VOICE) "语音签到" else "键盘签到"
+            textSize = 11f
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+            background = roundedBg(LIGHT, 100)
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }
+        row1.addView(methodTag, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(8) })
         card.addView(row1, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
@@ -201,9 +223,8 @@ class SignRecordsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(5) })
 
-        // 行 3：签到时间 + 码 + 方式
-        val methodText = if (rec.method == SignRecord.METHOD_VOICE) "语音" else "手动"
-        card.addView(subLine("签到：${hmFmt.format(Date(rec.tsResult))}   码 ${rec.code.ifEmpty { "—" }}   $methodText"), LinearLayout.LayoutParams(
+        // 行 3：签到时间 + 码（方式已由行 1 右侧标签展示）
+        card.addView(subLine("签到：${hmFmt.format(Date(rec.tsResult))}   码 ${rec.code.ifEmpty { "—" }}"), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(3) })
 

@@ -16,7 +16,7 @@ import java.io.FileOutputStream
  * - 截图：filesDir/signshots/rec_<id>.jpg（JPEG 质量 82，长边 ≤ 1080px）
  * - 上限：SignRecord.STATUS_MAX 条，超出清理最旧记录并连带删除其截图
  */
-class SignRecordStore(context: Context) : SQLiteOpenHelper(context, "sign_records.db", null, 1) {
+class SignRecordStore(context: Context) : SQLiteOpenHelper(context, "sign_records.db", null, 2) {
 
     private val appContext = context.applicationContext
 
@@ -37,13 +37,21 @@ class SignRecordStore(context: Context) : SQLiteOpenHelper(context, "sign_record
                 ratio_text TEXT DEFAULT '',
                 shot_path TEXT DEFAULT '',
                 app_version TEXT DEFAULT '',
-                note TEXT DEFAULT ''
+                note TEXT DEFAULT '',
+                asr_text TEXT DEFAULT ''
             )"""
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_ts_submit ON records(ts_submit DESC)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // v1 → v2：语音签到详情需展示识别依据（MIMO 转写文本）
+        if (oldVersion < 2) {
+            try {
+                db.execSQL("ALTER TABLE records ADD COLUMN asr_text TEXT DEFAULT ''")
+            } catch (e: Exception) {}
+        }
+    }
 
     /** 写入一条记录，返回自增 id（截图文件命名依赖） */
     fun insert(rec: SignRecord): Long {
@@ -62,6 +70,7 @@ class SignRecordStore(context: Context) : SQLiteOpenHelper(context, "sign_record
             put("shot_path", rec.shotPath)
             put("app_version", rec.appVersion)
             put("note", rec.note)
+            put("asr_text", rec.asrText)
         }
         val id = writableDatabase.insert("records", null, cv)
         if (id > 0) deleteOldIfNeeded()
@@ -113,7 +122,8 @@ class SignRecordStore(context: Context) : SQLiteOpenHelper(context, "sign_record
         ratioText = c.getString(c.getColumnIndexOrThrow("ratio_text")),
         shotPath = c.getString(c.getColumnIndexOrThrow("shot_path")),
         appVersion = c.getString(c.getColumnIndexOrThrow("app_version")),
-        note = c.getString(c.getColumnIndexOrThrow("note"))
+        note = c.getString(c.getColumnIndexOrThrow("note")),
+        asrText = try { c.getString(c.getColumnIndexOrThrow("asr_text")) } catch (e: Exception) { "" }
     )
 
     /** 记录写入后补截图路径（截图命名依赖自增 id，故先 insert 再 update） */

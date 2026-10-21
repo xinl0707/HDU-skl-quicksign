@@ -45,6 +45,12 @@ class SignRecordDetailActivity : Activity() {
     private fun dp(v: Number): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
+    /** 状态栏高度（edge-to-edge 下内容需避让，targetSdk 37 强制） */
+    private fun statusBarHeight(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
+    }
+
     private fun roundedBg(color: Int, radius: Int): android.graphics.drawable.GradientDrawable =
         android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
@@ -80,7 +86,7 @@ class SignRecordDetailActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
-            setPadding(dp(16), dp(16), dp(16), dp(10))
+            setPadding(dp(16), dp(16) + statusBarHeight(), dp(16), dp(10))
         }
 
         // ========== 顶栏 ==========
@@ -152,10 +158,13 @@ class SignRecordDetailActivity : Activity() {
             "${dtFmt.format(Date(rec.courseStart))}  ${hmFmt.format(Date(rec.courseStart))} - ${hmFmt.format(Date(rec.courseEnd))}"
         else "上课时间未知"
         courseBlock.addView(TextView(this).apply {
-            text = rec.courseName.ifEmpty { "——（页面未提供课程名）" }
-            textSize = 18f
-            setTextColor(TEXT)
-            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            text = rec.courseName.ifEmpty { "课程名未知" }
+            textSize = if (rec.courseName.isEmpty()) 13f else 18f
+            setTextColor(if (rec.courseName.isEmpty()) SUB else TEXT)
+            setTypeface(
+                if (rec.courseName.isEmpty()) android.graphics.Typeface.DEFAULT
+                else android.graphics.Typeface.DEFAULT_BOLD
+            )
         }, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
@@ -168,20 +177,24 @@ class SignRecordDetailActivity : Activity() {
 
         // ========== 签到信息卡 ==========
         val signBlock = block("签到信息")
-        val methodText = if (rec.method == SignRecord.METHOD_VOICE) "语音提取" else "手动键盘"
+        val methodText = if (rec.method == SignRecord.METHOD_VOICE) "语音签到（MIMO 识别）" else "键盘签到（手动输入）"
         val submitText = if (rec.tsSubmit > 0) secFmt.format(Date(rec.tsSubmit)) else "—"
         val resultText = if (rec.tsResult > 0) secFmt.format(Date(rec.tsResult)) else "—"
-        val rows = listOf(
+        val rows = mutableListOf(
             "签到码" to rec.code.ifEmpty { "—" },
             "签到方式" to methodText,
             "提交时间" to submitText,
             "结果时间" to resultText,
             "App 版本" to rec.appVersion.ifEmpty { "—" }
         )
+        // 语音签到：追加「识别依据」行（MIMO 转写文本），便于回溯识别形式与原始内容
+        if (rec.method == SignRecord.METHOD_VOICE && rec.asrText.isNotBlank()) {
+            rows.add(1, "识别依据" to rec.asrText)
+        }
         for ((k, v) in rows) {
             val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             r.addView(subLine(k), LinearLayout.LayoutParams(
-                dp(76), ViewGroup.LayoutParams.WRAP_CONTENT
+                dp(84), ViewGroup.LayoutParams.WRAP_CONTENT
             ))
             r.addView(TextView(this).apply {
                 text = v
@@ -270,22 +283,12 @@ class SignRecordDetailActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
 
-        // 底部说明
-        root.addView(TextView(this).apply {
-            text = "记录仅保存在本机，卸载 App 后清除"
-            textSize = 11f
-            setTextColor(SUB)
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-
         setContentView(root)
     }
 
-    /** 截图缺失占位：说明降级为文字快照 */
+    /** 截图缺失占位：离屏截图与摘要卡片兜底均失败时才出现（极罕见） */
     private fun shotPlaceholder(): TextView = TextView(this).apply {
-        text = "截图生成失败（该机型不支持离屏截图）\n以上文字信息为完整快照"
+        text = "截图生成失败（离屏截图与摘要卡片均未生成）\n以上文字信息为完整快照"
         textSize = 13f
         setTextColor(SUB)
         gravity = Gravity.CENTER

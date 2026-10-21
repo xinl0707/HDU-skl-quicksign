@@ -288,7 +288,7 @@ class SettingsActivity : Activity() {
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         titleRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        // 右上角保存按钮（原"操作"块里的保存设置移到这里，操作块只留登录/清除）
+        // 右上角保存按钮（原"操作"块里的保存设置移到这里；操作块已移除，仅保留调试块）
         val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
         saveTop.setOnClickListener { save() }
         titleRow.addView(saveTop, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -558,24 +558,6 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
         root.addView(styleBlock, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
-
-        // ========== 操作块 ==========
-        val actionBlock = block("操作")
-        // "保存并登录"已与右上角"保存"合并（保存后返回主界面即自动登录），操作块只保留清除账号
-        val clearBtn = button("清除账号", LIGHT, 0xFFFA5151.toInt(), big = true, radius = 18)
-        clearBtn.setOnClickListener {
-            credStore.clear()
-            userInput.setText("")
-            passInput.setText("")
-            DebugLog.info("设置", "清除已保存的账号密码")
-            toast("账号已清除")
-        }
-        actionBlock.addView(clearBtn, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-        root.addView(actionBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
 

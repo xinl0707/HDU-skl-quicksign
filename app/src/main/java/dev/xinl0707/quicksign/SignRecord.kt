@@ -28,7 +28,9 @@ data class SignRecord(
     val ratioText: String = "",
     val shotPath: String = "",
     val appVersion: String = "",
-    val note: String = ""
+    val note: String = "",
+    /** 语音签到时 MIMO 识别的转写依据（如「签到码是八五一七」）；手动输入为空 */
+    val asrText: String = ""
 ) {
     companion object {
         const val STATUS_SUCCESS = 0
