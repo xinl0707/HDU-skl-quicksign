@@ -180,6 +180,35 @@ class SignRecordDetailActivity : Activity() {
         val methodText = if (rec.method == SignRecord.METHOD_VOICE) "语音签到（MIMO 识别）" else "键盘签到（手动输入）"
         val submitText = if (rec.tsSubmit > 0) secFmt.format(Date(rec.tsSubmit)) else "—"
         val resultText = if (rec.tsResult > 0) secFmt.format(Date(rec.tsResult)) else "—"
+        // 语音签到：插入「识别依据」块——完整 MIMO 转写原文 + 醒目提取结果，便于回溯识别形式与原始内容
+        if (rec.method == SignRecord.METHOD_VOICE && rec.asrText.isNotBlank()) {
+            val asrBlock = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val r1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            r1.addView(subLine("识别依据"), LinearLayout.LayoutParams(
+                dp(84), ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            r1.addView(TextView(this).apply {
+                text = rec.asrText.trim()
+                textSize = 14f
+                setTextColor(TEXT)
+            }, LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+            ))
+            asrBlock.addView(r1, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            asrBlock.addView(TextView(this).apply {
+                text = "提取结果 → ${rec.code.ifEmpty { "—" }}"
+                textSize = 13f
+                setTextColor(ACCENT)
+                setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { leftMargin = dp(84); topMargin = dp(3) })
+            signBlock.addView(asrBlock, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) })
+        }
         val rows = mutableListOf(
             "签到码" to rec.code.ifEmpty { "—" },
             "签到方式" to methodText,
@@ -187,10 +216,6 @@ class SignRecordDetailActivity : Activity() {
             "结果时间" to resultText,
             "App 版本" to rec.appVersion.ifEmpty { "—" }
         )
-        // 语音签到：追加「识别依据」行（MIMO 转写文本），便于回溯识别形式与原始内容
-        if (rec.method == SignRecord.METHOD_VOICE && rec.asrText.isNotBlank()) {
-            rows.add(1, "识别依据" to rec.asrText)
-        }
         for ((k, v) in rows) {
             val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             r.addView(subLine(k), LinearLayout.LayoutParams(

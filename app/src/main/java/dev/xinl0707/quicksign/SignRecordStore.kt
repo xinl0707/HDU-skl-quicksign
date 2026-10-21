@@ -107,6 +107,16 @@ class SignRecordStore(context: Context) : SQLiteOpenHelper(context, "sign_record
         }
     }
 
+    /** 删除一条记录（连同其截图文件）；返回是否删除成功 */
+    fun deleteRecord(id: Long): Boolean {
+        val rec = get(id)
+        val deleted = writableDatabase.delete("records", "id=?", arrayOf(id.toString())) > 0
+        if (deleted && rec != null && rec.shotPath.isNotBlank()) {
+            try { shotFile(rec.shotPath).delete() } catch (e: Exception) {}
+        }
+        return deleted
+    }
+
     private fun recordFrom(c: android.database.Cursor): SignRecord = SignRecord(
         id = c.getLong(c.getColumnIndexOrThrow("id")),
         status = c.getInt(c.getColumnIndexOrThrow("status")),

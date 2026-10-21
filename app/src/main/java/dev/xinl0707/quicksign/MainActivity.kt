@@ -624,8 +624,8 @@ class MainActivity : Activity() {
         val titleBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            // edge-to-edge（targetSdk 37 强制）下内容会延伸到状态栏：顶部留出状态栏高度
-            setPadding(dp(18), dp(14) + statusBarHeight(), dp(14), dp(6))
+            // 顶部间距沿用 v3.2.0（紧凑）：不加状态栏额外下推，避免标题离顶部过远
+            setPadding(dp(18), dp(14), dp(14), dp(6))
         }
         titleBar.addView(TextView(this).apply {
             text = "上课啦"
@@ -2544,19 +2544,23 @@ class MainActivity : Activity() {
         extract(0)
     }
 
-    /** 输码后结果判定中：键盘位显示大大大转圈过渡，键盘与四位横线隐藏 */
+    /** 输码后结果判定中：键盘位显示大大大转圈过渡，键盘与四位横线隐藏；
+     *  时钟上方的大标题（panelTitleText）切换为「正在签到」 */
     private fun showResultWaiting() {
         resultWaiting = true
         loadingBar?.visibility = View.VISIBLE
         panelKeyGrid?.visibility = View.GONE
         panelCodeDisplay.visibility = View.GONE
-        statusText.text = "正在签到"
+        panelTitleText.text = "正在签到"
+        panelTitleText.setTextColor(ACCENT)
     }
 
-    /** 结果判定结束：收起转圈（键盘恢复由签到页状态机处理） */
+    /** 结果判定结束：收起转圈（键盘恢复由签到页状态机处理），大标题回到就绪文案 */
     private fun hideResultWaiting() {
         resultWaiting = false
         loadingBar?.visibility = View.GONE
+        panelTitleText.text = if (signReady) "签到就绪" else "加载中"
+        panelTitleText.setTextColor(if (signReady) TEXT else SUB)
     }
 
     /** 解析 detail 页正文：课程名 + 学勤预警 + 考勤四格（真实结构：签到完成/课程名/考勤统计/学勤预警/旷课学时x/课程总学时y/比例%/正常n/请假n/迟到n/旷课n） */
@@ -2648,7 +2652,9 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 失败类记录：签到码无效（STATUS_INVALID）/ 自动输入失败（STATUS_INJECT_FAIL） */
+    /** 失败类记录：签到码无效（STATUS_INVALID）/ 自动输入失败（STATUS_INJECT_FAIL）。
+     *  失败记录也生成摘要卡片图（网页未跳转结果页，离屏截网页无意义，直接用原生绘制兜底），
+     *  保证详情页「签到网页截图」区域任何记录都有图 */
     private fun saveInvalidRecord(status: Int) {
         try {
             val now = System.currentTimeMillis()
@@ -2661,7 +2667,12 @@ class MainActivity : Activity() {
                 appVersion = currentVersion(),
                 asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else ""
             )
-            recordStore.insert(rec)
+            val id = recordStore.insert(rec)
+            val bmp = buildSummaryShot(rec)
+            if (bmp != null) {
+                val path = recordStore.saveShot(id, bmp)
+                if (path != null) recordStore.updateShot(id, path)
+            }
             opLog("记录", if (status == SignRecord.STATUS_INVALID)
                 "签到码无效已记录（码 $lastFilledCode）"
             else "自动输入失败已记录（码 $lastFilledCode）")
@@ -2770,7 +2781,8 @@ class MainActivity : Activity() {
                 val ap = paint(48f, SUB, false)
                 while (ap.measureText(shown) > maxW && shown.length > 1) shown = shown.dropLast(1)
                 if (shown != asr) shown += "…"
-                canvas.drawText("识别依据  $shown", 80f, y, ap); y += 104
+                canvas.drawText("识别依据  $shown", 80f, y, ap); y += 92
+                canvas.drawText("提取结果  ${rec.code.ifEmpty { "—" }}", 80f, y, paint(52f, TEXT, true)); y += 104
             }
             if (rec.tsSubmit > 0) canvas.drawText("提交 ${timeFmt.format(java.util.Date(rec.tsSubmit))}", 80f, y, paint(48f, SUB, false))
             y += 92

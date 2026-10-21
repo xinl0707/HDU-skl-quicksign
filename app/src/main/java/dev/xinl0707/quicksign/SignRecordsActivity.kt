@@ -24,6 +24,8 @@ class SignRecordsActivity : Activity() {
 
     private lateinit var credStore: CredentialStore
     private lateinit var recordStore: SignRecordStore
+    private var listWrap: LinearLayout? = null      // 记录卡片容器（删除后即时移除卡片）
+    private var countBadge: TextView? = null       // 顶栏记录计数（删除后即时刷新）
 
     // 深色模式跟随系统；配色按「界面风格 × 深浅」从 ThemePalette 取
     private val isNight: Boolean by lazy {
@@ -92,43 +94,35 @@ class SignRecordsActivity : Activity() {
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         titleRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        val countBadge = TextView(this).apply {
+        val countBadgeLocal = TextView(this).apply {
             text = "共 ${recordStore.count()} 条"
             textSize = 12f
             setTextColor(SUB)
             gravity = Gravity.CENTER_VERTICAL
         }
-        titleRow.addView(countBadge, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        countBadge = countBadgeLocal
+        titleRow.addView(countBadgeLocal, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
 
         // ========== 列表区（可滚动） ==========
-        val listWrap = LinearLayout(this).apply {
+        val listWrapLocal = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
+        listWrap = listWrapLocal
         val records = recordStore.list(limit = SignRecord.STATUS_MAX)
         if (records.isEmpty()) {
-            // 空态引导
-            val empty = TextView(this).apply {
-                text = "暂无签到记录\n\n完成一次签到（语音或手动）后，会自动记录到这里"
-                textSize = 14f
-                setTextColor(SUB)
-                gravity = Gravity.CENTER
-                setLineSpacing(dp(4).toFloat(), 1f)
-            }
-            listWrap.addView(empty, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(120) })
+            showEmpty()
         } else {
             for (rec in records) {
-                listWrap.addView(recordCard(rec), LinearLayout.LayoutParams(
+                listWrapLocal.addView(recordCard(rec), LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply { bottomMargin = dp(10) })
             }
         }
         val scroll = ScrollView(this).apply {
-            addView(listWrap, FrameLayout.LayoutParams(
+            addView(listWrapLocal, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
         }
@@ -149,7 +143,10 @@ class SignRecordsActivity : Activity() {
         setContentView(root)
     }
 
-    /** 单条记录卡片：状态徽标 + 课程名 + 上课时间 + 签到时间/码/方式 + 考勤统计 */
+    /** 单条记录卡片：
+     *  行 1 = 标签行（状态徽标 + 签到方式标签，放大占满一行，左右两端排布）；
+     *  行 2 = 课程名 + 上课时间（右侧）；
+     *  行 3 = 签到时间/码 + 删除按钮 */
     private fun recordCard(rec: SignRecord): LinearLayout {
         val timeFmt = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
         val hmFmt = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
@@ -172,40 +169,34 @@ class SignRecordsActivity : Activity() {
             }
         }
 
-        // 行 1：徽标 + 课程名
-        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        // 行 1：标签行——左侧状态徽标、右侧签到方式标签，均放大并占满一行
+        val row1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val badge = TextView(this).apply {
             text = badgeText
-            textSize = 11f
+            textSize = 13f
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER
             background = roundedBg(badgeColor, 100)
-            setPadding(dp(8), dp(3), dp(8), dp(3))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         row1.addView(badge, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { marginEnd = dp(8) })
-        row1.addView(TextView(this).apply {
-            text = rec.courseName.ifEmpty { "课程名未知" }
-            textSize = if (rec.courseName.isEmpty()) 13f else 16f
-            setTextColor(if (rec.courseName.isEmpty()) SUB else TEXT)
-            gravity = Gravity.CENTER_VERTICAL
-            setTypeface(
-                if (rec.courseName.isEmpty()) android.graphics.Typeface.DEFAULT
-                else android.graphics.Typeface.DEFAULT_BOLD
-            )
-        }, LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
         ))
-        // 签到方式圆角标签（与状态徽标同风格，放右侧；语音签到 / 键盘签到）
+        // 中间弹性空白，让右侧标签顶到行尾
+        row1.addView(View(this), LinearLayout.LayoutParams(
+            0, dp(1), 1f
+        ))
         val methodTag = TextView(this).apply {
             text = if (rec.method == SignRecord.METHOD_VOICE) "语音签到" else "键盘签到"
-            textSize = 11f
+            textSize = 13f
             setTextColor(ACCENT)
             gravity = Gravity.CENTER
             background = roundedBg(LIGHT, 100)
-            setPadding(dp(8), dp(3), dp(8), dp(3))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         row1.addView(methodTag, LinearLayout.LayoutParams(
@@ -215,16 +206,60 @@ class SignRecordsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        // 行 2：上课时间（课表匹配；未匹配显示未知）
+        // 行 2：课程名（左，可截断） + 上课时间（右，SUB 小字）
         val courseTime = if (rec.courseStart > 0 && rec.courseEnd > 0)
             "${timeFmt.format(Date(rec.courseStart))} - ${hmFmt.format(Date(rec.courseEnd)).substring(0, 5)}"
         else "上课时间未知"
-        card.addView(subLine("上课：$courseTime"), LinearLayout.LayoutParams(
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row2.addView(TextView(this).apply {
+            text = rec.courseName.ifEmpty { "课程名未知" }
+            textSize = if (rec.courseName.isEmpty()) 13f else 16f
+            setTextColor(if (rec.courseName.isEmpty()) SUB else TEXT)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTypeface(
+                if (rec.courseName.isEmpty()) android.graphics.Typeface.DEFAULT
+                else android.graphics.Typeface.DEFAULT_BOLD
+            )
+        }, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+        ))
+        row2.addView(TextView(this).apply {
+            text = courseTime
+            textSize = 12f
+            setTextColor(SUB)
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(8) })
+        card.addView(row2, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(5) })
+        ).apply { topMargin = dp(6) })
 
-        // 行 3：签到时间 + 码（方式已由行 1 右侧标签展示）
-        card.addView(subLine("签到：${hmFmt.format(Date(rec.tsResult))}   码 ${rec.code.ifEmpty { "—" }}"), LinearLayout.LayoutParams(
+        // 行 3：签到时间 + 码（左） + 删除按钮（右）
+        val row3 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row3.addView(subLine("签到：${hmFmt.format(Date(rec.tsResult))}   码 ${rec.code.ifEmpty { "—" }}"),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val delBtn = TextView(this).apply {
+            text = "删除"
+            textSize = 12f
+            setTextColor(0xFFE5484D.toInt())
+            gravity = Gravity.CENTER
+            background = roundedBg(LIGHT, 100)
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            isClickable = true
+            setOnClickListener { confirmDelete(rec, card) }
+        }
+        row3.addView(delBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(8) })
+        card.addView(row3, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(3) })
 
@@ -235,6 +270,42 @@ class SignRecordsActivity : Activity() {
             ).apply { topMargin = dp(3) })
         }
         return card
+    }
+
+    /** 删除确认：系统弹窗确认后删除记录（含截图），即时移除卡片并刷新计数 */
+    private fun confirmDelete(rec: SignRecord, card: View) {
+        val timeFmt = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("删除这条签到记录？")
+            .setMessage(
+                "课程：${rec.courseName.ifEmpty { "课程名未知" }}\n" +
+                    "时间：${timeFmt.format(Date(rec.tsResult))}\n" +
+                    "码：${rec.code.ifEmpty { "—" }}\n\n删除后不可恢复。"
+            )
+            .setPositiveButton("删除") { _, _ ->
+                val ok = recordStore.deleteRecord(rec.id)
+                if (ok) {
+                    listWrap?.removeView(card)
+                    countBadge?.text = "共 ${recordStore.count()} 条"
+                    if (recordStore.count() == 0) showEmpty()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 空态引导（列表无记录时展示；删除至空时也会调用） */
+    private fun showEmpty() {
+        val empty = TextView(this).apply {
+            text = "暂无签到记录\n\n完成一次签到（语音或手动）后，会自动记录到这里"
+            textSize = 14f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            setLineSpacing(dp(4).toFloat(), 1f)
+        }
+        listWrap?.addView(empty, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(120) })
     }
 
     /** 卡片内副文字行（SUB 色，13sp） */
