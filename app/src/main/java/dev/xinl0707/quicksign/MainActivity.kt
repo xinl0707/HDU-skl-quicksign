@@ -2685,9 +2685,9 @@ class MainActivity : Activity() {
             val downloadBtn = button("去下载", ACCENT, 0xFFFFFFFF.toInt(), radius = 18)
             downloadBtn.setOnClickListener {
                 ov.visibility = View.GONE
-                val url = info.apkUrl ?: info.htmlUrl
-                if (url.isNotEmpty()) {
-                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                // 直接跳转 Release 页面（浏览器里选 APK 下载）；不跳 APK 直链——直链下载在部分网络下不稳定
+                if (info.htmlUrl.isNotEmpty()) {
+                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(info.htmlUrl)))
                 }
             }
             btnRow.addView(downloadBtn, LinearLayout.LayoutParams(0, dp(46), 1f))
