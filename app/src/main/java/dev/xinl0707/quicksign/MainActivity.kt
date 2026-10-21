@@ -12,8 +12,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Rect
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.location.Location
@@ -115,12 +113,12 @@ class MainActivity : Activity() {
 2. 课表数据仅供参考，实际课程安排、上课时间、地点、教师等信息一律以学校教务系统或任课老师通知为准。因课表导入错误、文件格式问题或课程调整导致的显示不准确，开发者不承担责任。
 
 九、签到记录功能
-1. 本 App 提供签到记录留存功能，用于在本地记录使用者通过本 App 完成的签到行为，包括但不限于课程名称、上课时间、签到时刻、签到码、签到方式（语音提取或手动键盘输入）、签到结果状态（签到成功、签到码无效、自动输入失败）以及签到成功时生成的网页截图。
-2. 所有签到记录及网页截图仅保存在使用者本机 App 内部存储空间，不经过任何服务器，不上传、不共享、不出境。截图仅在完成一次成功签到后于本机离屏生成，不读取相册、不申请额外存储权限。
+1. 本 App 提供签到记录留存功能，用于在本地记录使用者通过本 App 完成的签到行为，包括但不限于课程名称、上课时间、签到时刻、签到码、签到方式（语音提取或手动键盘输入）、签到结果状态（签到成功、签到码无效、自动输入失败）。
+2. 所有签到记录仅保存在使用者本机 App 内部存储空间，不经过任何服务器，不上传、不共享、不出境。
 3. 签到记录可能因卸载本 App、清理应用数据、更换设备等原因永久丢失，开发者不提供任何云端备份、恢复或导出服务，使用者应自行知悉并妥善处理。
 4. 本功能仅记录使用本 App 完成的签到行为，不包含在网页端、其他设备或其他途径进行的签到，也不代表学校教务系统的权威签到结果；一切签到结果以学校「上课啦」系统及教务系统为准。
 5. 签到记录中的课程名称、上课时间等信息部分来源于使用者自行导入的课表文件（见第八条），可能存在不准确或缺失情况，仅供参考。
-6. 自 v3.2.4 起，签到成功后的网页截图采用系统级屏幕截图通道（PixelCopy）实现。截图完成的瞬间，本 App 会临时将后台网页切换到前台显示约 0.5 秒（直观展示签到结果页面），随后自动恢复原有界面；该过程在签到成功判定后自动发生，属正常的界面过渡，不影响签到流程与签到结果，亦不包含本 App 界面外的任何屏幕内容。若设备或系统版本不支持该截图通道，本 App 会自动降级为文字信息摘要图，不影响签到记录的正常保存。截图仅保存在本机（见本条前文），不进行任何网络传输。
+6. 自 v3.2.5 起，本 App 已整体移除网页截图功能（此前版本的离屏截图/PixelCopy 截图机制不再使用），签到记录不再生成、保存或展示任何截图内容，以保证签到流程的流畅性与稳定性；此前版本已生成并保存在本机的旧截图不受影响，仍仅保存在本机、不进行任何网络传输。
 
 十、第三方服务
 1. 本 App 除可选接 MIMO 云端语音识别服务外，还可能依赖系统语音识别引擎、系统定位服务、WebView 内核等操作系统级组件，其行为受设备厂商与系统版本影响。
@@ -2537,11 +2535,9 @@ class MainActivity : Activity() {
                     Regex("旷课学时\\s*\\d+\\s*/\\s*课程总学时\\s*[1-9]\\d*").containsMatchIn(t)
                 if (dataLoaded || attempt >= 8) {
                     parseSignResult(t)
-                    // 先写记录 + 抓网页截图（异步完成后再弹覆盖页，避免覆盖页遮住截图画面）
-                    saveSuccessRecord(onDone = {
-                        showSignResultOverlay()
-                        successHandling = false
-                    })
+                    saveSuccessRecord()   // 签到成功：解析数据 → 本地记录（v3.2.5 起不再截图，直接弹覆盖页）
+                    showSignResultOverlay()
+                    successHandling = false
                 } else {
                     handler.postDelayed({ extract(attempt + 1) }, 600)
                 }
@@ -2623,11 +2619,9 @@ class MainActivity : Activity() {
     private fun currentVersion(): String =
         try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
 
-    /** 成功判定后：解析数据 → 本地记录 → 离屏截图（截图失败不阻断，降级文字快照）。
-     *  在 UI 线程调用（extract 回调链）；同一帧内完成，不影响覆盖页动画 */
-    /** 保存签到成功记录。截图走异步通道（露出网页 → PixelCopy 抓取 → 恢复），
-     *  截图完成或失败降级后才回调 onDone（用于衔接「弹签到完成覆盖页」，避免覆盖页遮住截图） */
-    private fun saveSuccessRecord(onDone: (() -> Unit)? = null) {
+    /** 保存签到成功记录：解析数据 → 本地记录。v3.2.5 起不再生成网页截图
+     *  （截图通道影响签到流程流畅性，已整体移除；详情页亦不再展示截图区） */
+    private fun saveSuccessRecord() {
         try {
             val now = System.currentTimeMillis()
             val courseName = resultCourseText?.text?.toString().orEmpty()
@@ -2649,30 +2643,14 @@ class MainActivity : Activity() {
                 asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else "",
                 note = if (lastSource == SignRecord.METHOD_VOICE) lastAsrNote else ""
             )
-            val id = recordStore.insert(rec)
-            captureSignShotAsync { bmp ->
-                try {
-                    val shot = bmp ?: buildSummaryShot(rec)   // 真截图失败 → 原生绘制摘要卡片图兜底
-                    if (shot != null) {
-                        val path = recordStore.saveShot(id, shot)
-                        if (path != null) recordStore.updateShot(id, path)
-                    }
-                    opLog("记录", "签到成功已记录（$courseName · 码 $lastFilledCode · ${if (lastSource == SignRecord.METHOD_VOICE) "语音" else "手动"}）")
-                } catch (e: Exception) {
-                    DebugLog.warn("记录", "成功记录截图保存失败：${e.message}")
-                } finally {
-                    onDone?.invoke()
-                }
-            }
+            recordStore.insert(rec)
+            opLog("记录", "签到成功已记录（$courseName · 码 $lastFilledCode · ${if (lastSource == SignRecord.METHOD_VOICE) "语音" else "手动"}）")
         } catch (e: Exception) {
             DebugLog.warn("记录", "成功记录写入失败：${e.message}")
-            onDone?.invoke()
         }
     }
 
-    /** 失败类记录：签到码无效（STATUS_INVALID）/ 自动输入失败（STATUS_INJECT_FAIL）。
-     *  失败记录也生成摘要卡片图（网页未跳转结果页，离屏截网页无意义，直接用原生绘制兜底），
-     *  保证详情页「签到网页截图」区域任何记录都有图 */
+    /** 失败类记录：签到码无效（STATUS_INVALID）/ 自动输入失败（STATUS_INJECT_FAIL） */
     private fun saveInvalidRecord(status: Int) {
         try {
             val now = System.currentTimeMillis()
@@ -2686,12 +2664,7 @@ class MainActivity : Activity() {
                 asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else "",
                 note = if (lastSource == SignRecord.METHOD_VOICE) lastAsrNote else ""
             )
-            val id = recordStore.insert(rec)
-            val bmp = buildSummaryShot(rec)
-            if (bmp != null) {
-                val path = recordStore.saveShot(id, bmp)
-                if (path != null) recordStore.updateShot(id, path)
-            }
+            recordStore.insert(rec)
             opLog("记录", if (status == SignRecord.STATUS_INVALID)
                 "签到码无效已记录（码 $lastFilledCode）"
             else "自动输入失败已记录（码 $lastFilledCode）")
@@ -2700,193 +2673,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 网页截图（异步）：签到成功瞬间临时把网页真正显示到屏幕（露出底层 WebView），
-     *  等待一帧渲染后优先用 PixelCopy 从窗口合成层抓取真实网页画面（这是唯一能稳定
-     *  抓到 WebView 内容的通道——chromium 强制硬件合成，离屏 draw 无法读取）；
-     *  抓完立即恢复界面，再通过 onDone 回调继续（回调后才会弹签到完成覆盖页）。
-     *  任何失败路径都回调 null（降级摘要卡片图），并保证界面状态恢复。 */
-    private fun captureSignShotAsync(onDone: (Bitmap?) -> Unit) {
-        try {
-            val oldPanel = signPanelWrap?.visibility ?: View.VISIBLE
-            val oldStatus = statusWrap?.visibility ?: View.VISIBLE
-            val oldWeb = webView.visibility
-            // 露出网页（签到成功页此刻已渲染完成）；底部状态栏一并隐藏，保证截图干净
-            signPanelWrap?.visibility = View.GONE
-            statusWrap?.visibility = View.GONE
-            webView.visibility = View.VISIBLE
-            rootFrame.postDelayed({
-                var bmp: Bitmap? = null
-                try {
-                    if (android.os.Build.VERSION.SDK_INT >= 26) {
-                        val w = webView.width
-                        val h = webView.height
-                        if (w > 0 && h > 0) {
-                            val loc = IntArray(2)
-                            webView.getLocationInWindow(loc)
-                            bmp = pixelCopyCapture(
-                                android.graphics.Rect(loc[0], loc[1], loc[0] + w, loc[1] + h), w, h
-                            )
-                        }
-                    }
-                    // 降级：软件层同帧绘制（低版本机型或 PixelCopy 不支持时）
-                    if (bmp == null) {
-                        val dm = resources.displayMetrics
-                        val w = dm.widthPixels
-                        val h = dm.heightPixels
-                        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                        val canvas = Canvas(b)
-                        canvas.drawColor(0xFFFFFFFF.toInt())
-                        val oldLayer = webView.layerType
-                        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-                        webView.measure(
-                            View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
-                            View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
-                        )
-                        webView.layout(0, 0, w, h)
-                        webView.draw(canvas)
-                        webView.setLayerType(oldLayer, null)
-                        bmp = b
-                    }
-                } catch (e: Exception) {
-                    DebugLog.warn("截图", "网页截图失败（降级摘要卡片图）：${e.message}")
-                } finally {
-                    signPanelWrap?.visibility = oldPanel
-                    statusWrap?.visibility = oldStatus
-                    webView.visibility = oldWeb
-                }
-                onDone(bmp)
-            }, 260)
-        } catch (e: Exception) {
-            DebugLog.warn("截图", "截图准备异常（降级摘要卡片图）：${e.message}")
-            onDone(null)
-        }
-    }
 
-    /** PixelCopy 截图（反射调用）：精简版 android.jar 未打包 android.hardware.PixelCopy，
-     *  但真机（API 26+）必定存在该类。反射 + 动态代理调用 request() 从窗口合成层抓取
-     *  当前可见区域——WebView 强制硬件渲染，这是唯一能稳定抓到其内容的通道。
-     *  成功返回位图，失败/低版本返回 null（上层降级摘要卡片图）。 */
-    private fun pixelCopyCapture(rect: Rect, w: Int, h: Int): Bitmap? {
-        return try {
-            val cls = Class.forName("android.hardware.PixelCopy")
-            val listenerCls = Class.forName("android.hardware.PixelCopy\$OnPixelCopyFinishedListener")
-            val request = cls.getMethod(
-                "request", android.view.Window::class.java, Rect::class.java,
-                Bitmap::class.java, listenerCls
-            )
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val latch = java.util.concurrent.CountDownLatch(1)
-            var ok = false
-            // 动态代理实现回调接口：onPixelCopyFinished(resultCode, bitmap)
-            val proxy = java.lang.reflect.Proxy.newProxyInstance(
-                listenerCls.classLoader, arrayOf(listenerCls)
-            ) { _, method, args ->
-                when (method.name) {
-                    "onPixelCopyFinished" -> {
-                        // PixelCopy.SUCCESS == 0（复制成功）
-                        ok = args != null && args[0] as Int == 0
-                        latch.countDown()
-                        null
-                    }
-                    "toString" -> "PixelCopyListener"
-                    "hashCode" -> System.identityHashCode(this)
-                    "equals" -> args != null && args[0] === this
-                    else -> null
-                }
-            }
-            request.invoke(null, window, rect, bmp, proxy)
-            latch.await(900, java.util.concurrent.TimeUnit.MILLISECONDS)
-            if (ok) bmp else { bmp.recycle(); null }
-        } catch (e: Throwable) {
-            DebugLog.warn("截图", "PixelCopy 反射调用失败（降级摘要卡片图）：${e.message}")
-            null
-        }
-    }
-
-    /** 截图兜底：离屏截图失败时，把签到摘要绘制成一张卡片图（原生绘制，任何机型都能生成），
-     *  保证详情页「签到网页截图」区域始终有图可看；返回 null 仅当绘制本身异常。
-     *  布局用固定行高 + 统一基线间距，避免文字错位/重叠 */
-    private fun buildSummaryShot(rec: SignRecord): Bitmap? {
-        return try {
-            val w = 1080
-            val h = 1900
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bmp)
-            val bg = if (isNight) 0xFF1C232E.toInt() else 0xFFFFFFFF.toInt()
-            canvas.drawColor(bg)
-            val timeFmt = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.CHINA)
-            fun paint(size: Float, color: Int, bold: Boolean): android.graphics.Paint =
-                android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                    textSize = size
-                    this.color = color
-                    typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
-                }
-            val line = if (isNight) 0xFF2A3341.toInt() else 0xFFEEF1F4.toInt()
-            val maxW = w - 160
-            // 统一文本行绘制：超长截断（保留省略号），避免越界与错位
-            fun row(text: String, y: Float, p: android.graphics.Paint) {
-                var s = text
-                while (p.measureText(s) > maxW && s.length > 1) s = s.dropLast(1)
-                if (s != text) s += "…"
-                canvas.drawText(s, 80f, y, p)
-            }
-            val sep: (Float) -> Unit = { y -> canvas.drawRect(80f, y, (w - 80).toFloat(), y + 6, paint(6f, line, false)) }
-            // 顶部标签
-            row("· 网页截图占位 · 签到信息摘要 ·", 120f, paint(46f, SUB, false))
-            // 状态大字
-            val statusColor = when (rec.status) {
-                SignRecord.STATUS_SUCCESS -> ACCENT
-                SignRecord.STATUS_INVALID -> 0xFFE5484D.toInt()
-                else -> 0xFFE59F0B.toInt()
-            }
-            val statusText = when (rec.status) {
-                SignRecord.STATUS_SUCCESS -> "签到完成"
-                SignRecord.STATUS_INVALID -> "签到码无效"
-                else -> "自动输入失败"
-            }
-            row(statusText, 300f, paint(130f, statusColor, true))
-            // 课程名
-            val course = rec.courseName.ifEmpty { "课程名未知" }
-            row(course, 470f, paint(if (rec.courseName.isEmpty()) 66f else 76f, if (rec.courseName.isEmpty()) SUB else TEXT, true))
-            sep(580f)
-            // 考勤统计（成功） / 失败原因
-            var y = 700f
-            if (rec.status == SignRecord.STATUS_SUCCESS) {
-                if (rec.statsText.isNotBlank()) { row(rec.statsText, y, paint(56f, TEXT, false)); y += 110 }
-                if (rec.hoursText.isNotBlank()) { row(rec.hoursText, y, paint(56f, TEXT, false)); y += 110 }
-                if (rec.ratioText.isNotBlank()) { row("到课比例 ${rec.ratioText}", y, paint(56f, TEXT, false)); y += 110 }
-            } else {
-                val reason = if (rec.status == SignRecord.STATUS_INVALID)
-                    "提交后未跳转结果页，可能为码错误或网络超时" else "自动填入未获网页确认，请手动输入"
-                row(reason, y, paint(54f, SUB, false)); y += 110
-            }
-            sep(y + 40f)
-            y += 150f
-            // 签到信息
-            row("签到码  ${rec.code.ifEmpty { "—" }}", y, paint(64f, TEXT, true)); y += 110
-            row(
-                if (rec.method == SignRecord.METHOD_VOICE) "识别方式  语音签到（MIMO 语音提取）" else "识别方式  键盘签到（手动输入）",
-                y, paint(54f, SUB, false)
-            ); y += 110
-            if (rec.asrText.isNotBlank()) {
-                row("识别依据  ${rec.asrText.replace("\n", " ").trim()}", y, paint(48f, SUB, false)); y += 110
-            }
-            if (rec.note.isNotBlank()) {
-                row("判定过程  ${rec.note.replace("\n", " ").trim()}", y, paint(48f, SUB, false)); y += 110
-            }
-            if (rec.asrText.isNotBlank()) {
-                row("提取结果  ${rec.code.ifEmpty { "—" }}", y, paint(54f, ACCENT, true)); y += 110
-            }
-            val submit = if (rec.tsSubmit > 0) timeFmt.format(java.util.Date(rec.tsSubmit)) else "—"
-            val result = if (rec.tsResult > 0) timeFmt.format(java.util.Date(rec.tsResult)) else "—"
-            row("提交 $submit · 结果 $result", y, paint(48f, SUB, false)); y += 110
-            row("App ${rec.appVersion} · 记录 #${rec.id}", y, paint(48f, SUB, false))
-            bmp
-        } catch (e: Exception) {
-            DebugLog.warn("截图", "摘要卡片图绘制失败：${e.message}")
-            null
-        }
-    }
 
     /** 显示签到完成覆盖页（淡入 + 成功彩带） */
     private fun showSignResultOverlay() {
@@ -3052,8 +2839,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 简易 Markdown → Spanned：支持 # 标题、**粗体**、`行内代码`、[链接](url)、- 列表、换行；
-     *  先转义 HTML 再套标签，避免更新日志里的特殊字符破坏渲染 */
     private fun markdownToSpanned(md: String): android.text.Spanned {
         var s = md
             .replace("&", "&amp;")

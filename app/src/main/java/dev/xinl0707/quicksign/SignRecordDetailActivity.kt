@@ -1,8 +1,6 @@
 package dev.xinl0707.quicksign
 
 import android.app.Activity
-import android.app.Dialog
-import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
@@ -19,8 +17,8 @@ import java.util.Locale
 
 /**
  * 签到记录详情页（v3.2.0）。
- * 展示单条记录的完整信息：状态横幅 / 课程信息 / 签到信息 / 考勤统计 / 网页截图（点按全屏放大）。
- * 截图缺失时降级显示「文字快照」提示（离屏截图失败的机型兼容）。
+ * 展示单条记录的完整信息：状态横幅 / 课程信息 / 签到信息 / 考勤统计。
+ * v3.2.5 起不再展示网页截图（截图功能已整体移除）。
  */
 class SignRecordDetailActivity : Activity() {
 
@@ -296,41 +294,6 @@ class SignRecordDetailActivity : Activity() {
             ).apply { bottomMargin = dp(10) })
         }
 
-        // ========== 网页截图卡 ==========
-        val shotBlock = block("签到网页截图")
-        val imgView = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            adjustViewBounds = true
-        }
-        val shotFile = rec.shotPath.takeIf { it.isNotEmpty() }?.let { recordStore.shotFile(it) }
-        if (shotFile != null && shotFile.exists()) {
-            try {
-                val bmp = BitmapFactory.decodeFile(shotFile.absolutePath)
-                if (bmp != null) {
-                    imgView.setImageBitmap(bmp)
-                    imgView.setOnClickListener { showFullImage(shotFile.absolutePath) }
-                    shotBlock.addView(imgView, LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(320)
-                    ).apply { topMargin = dp(8) })
-                } else {
-                    shotBlock.addView(shotPlaceholder(), LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(140)
-                    ).apply { topMargin = dp(8) })
-                }
-            } catch (e: Exception) {
-                shotBlock.addView(shotPlaceholder(), LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(140)
-                ).apply { topMargin = dp(8) })
-            }
-        } else {
-            shotBlock.addView(shotPlaceholder(), LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(140)
-            ).apply { topMargin = dp(8) })
-        }
-        content.addView(shotBlock, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
-
         val scroll = ScrollView(this).apply {
             addView(content, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -341,29 +304,6 @@ class SignRecordDetailActivity : Activity() {
         ))
 
         setContentView(root)
-    }
-
-    /** 截图缺失占位：离屏截图与摘要卡片兜底均失败时才出现（极罕见） */
-    private fun shotPlaceholder(): TextView = TextView(this).apply {
-        text = "截图生成失败（离屏截图与摘要卡片均未生成）\n以上文字信息为完整快照"
-        textSize = 13f
-        setTextColor(SUB)
-        gravity = Gravity.CENTER
-        background = roundedBg(LIGHT, 14)
-    }
-
-    /** 全屏放大查看截图（点击任意处关闭） */
-    private fun showFullImage(path: String) {
-        try {
-            val d = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
-            val img = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                setImageBitmap(BitmapFactory.decodeFile(path))
-            }
-            img.setOnClickListener { d.dismiss() }
-            d.setContentView(img)
-            d.show()
-        } catch (e: Exception) {}
     }
 
     /** 圆角分块卡片（与设置页一致：标题行带主题色条） */

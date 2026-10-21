@@ -146,6 +146,7 @@ class SignRecordsActivity : Activity() {
     private fun recordCard(rec: SignRecord): LinearLayout {
         val timeFmt = SimpleDateFormat("MM月dd日 HH:mm", Locale.CHINA)
         val hmFmt = SimpleDateFormat("HH:mm", Locale.CHINA)
+        val mmddFmt = SimpleDateFormat("MM月dd日 HH:mm:ss", Locale.CHINA)
 
         // 状态徽标：颜色与文案按状态区分（成功=主题色 / 码无效=红 / 输入失败=橙）
         val (badgeColor, badgeText) = when (rec.status) {
@@ -199,15 +200,15 @@ class SignRecordsActivity : Activity() {
         ).apply { marginStart = dp(10); marginEnd = dp(10) })
         val methodTag = TextView(this).apply {
             text = if (rec.method == SignRecord.METHOD_VOICE) "语音签到" else "键盘签到"
-            textSize = 15f
+            textSize = 13f
             setTextColor(ACCENT)
             gravity = Gravity.CENTER
             background = roundedBg(LIGHT, 100)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         row1.addView(methodTag, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { marginStart = dp(4) })
         card.addView(row1, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -221,29 +222,30 @@ class SignRecordsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(6) })
 
-        // 行 3：签到时间（列表隐藏年月日，仅时分秒，避免冗长）+ 签到码（固定宽度两段，跨卡片对齐）+ 删除按钮
+        // 行 3：签到时间（带月日）+ 签到码（居中醒目，只显示数字）+ 删除按钮
         val row3 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        // 固定宽第一段：签到时间（HH:mm:ss，每张卡片同一列起点，为「签到码」对齐打底）
+        // 签到时间：MM月dd日 HH:mm:ss（弹性区域，超长截断，卡片间起点对齐）
         row3.addView(TextView(this).apply {
-            text = "签到时间：${hmFmt.format(Date(rec.tsResult))}"
+            text = "签到时间：${mmddFmt.format(Date(rec.tsResult))}"
             textSize = 13f
             setTextColor(SUB)
             includeFontPadding = false
-            setSingleLine(true)
-        }, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT))
-        // 固定宽第二段：签到码（所有卡片同一列，标签与值都对齐）
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // 签到码：只显示数字，主题色加粗居中（位于方式标签与删除按钮之间，一眼可见）
         row3.addView(TextView(this).apply {
-            text = "签到码：${rec.code.ifEmpty { "—" }}"
-            textSize = 13f
-            setTextColor(SUB)
+            text = rec.code.ifEmpty { "—" }
+            textSize = 17f
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
             includeFontPadding = false
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
             setSingleLine(true)
-        }, LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(6) })
-        // 弹性占位：把删除按钮推到最右，且不挤动前两段固定列
-        row3.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        }, LinearLayout.LayoutParams(dp(76), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) })
         val delBtn = TextView(this).apply {
             text = "删除"
             textSize = 12f
