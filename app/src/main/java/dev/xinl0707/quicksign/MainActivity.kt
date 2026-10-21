@@ -2593,10 +2593,12 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 版本更新检测
 
-    /** 开屏静默检查更新：不阻塞主流程，有更新在设置旁显示红色"更新"徽标，失败显示"检查失败" */
+    /** 开屏静默检查更新：不阻塞主流程，有更新在设置旁显示红色"更新"徽标，失败显示"检查失败"。
+     *  检查中与无更新时徽标隐藏；UpdateChecker 内部自动重试 3 次 + API/重定向双路径降级，只有最终失败才回调 */
     private fun checkUpdateSilent() {
         if (updateChecked) return
         updateChecked = true
+        updateBadge?.visibility = View.GONE   // 检查开始先隐藏，避免上次"检查失败"残留
         val current = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
         UpdateChecker.check(current) { result ->
             runOnUiThread {
