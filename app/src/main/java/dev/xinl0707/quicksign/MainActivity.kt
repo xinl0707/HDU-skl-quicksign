@@ -222,6 +222,8 @@ class MainActivity : Activity() {
     private var updateBadge: TextView? = null    // 设置旁的更新提示徽标
     private var updateInfo: UpdateInfo? = null   // 检测到的新版本信息
     private var updateChecked = false            // 本次启动是否已检查过（避免 onResume 重复检查）
+    private var updateOverlay: FrameLayout? = null   // 更新日志自绘弹窗
+    private var updateOverlayLog: TextView? = null   // 弹窗内更新日志（Markdown 渲染）
     // 首次启动引导（免责声明 + 权限 + 进设置），同意一次后不再弹出
     private var guideOverlay: FrameLayout? = null
     private var disclaimerCard: LinearLayout? = null
@@ -2626,27 +2628,108 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 点击更新徽标：有更新则弹窗展示更新日志 + 下载链接；检查失败则 toast 提示 */
+    /** 点击更新徽标：有更新则弹窗展示更新日志（Markdown 渲染）；检查失败则 toast 提示并重试 */
     private fun onUpdateBadgeClick() {
         val info = updateInfo
         if (info != null) {
-            android.app.AlertDialog.Builder(this)
-                .setTitle("发现新版本 ${info.version}")
-                .setMessage(info.changelog.ifEmpty { "暂无更新说明" })
-                .setPositiveButton("去下载") { _, _ ->
-                    val url = info.apkUrl ?: info.htmlUrl
-                    if (url.isNotEmpty()) {
-                        startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
-                    }
-                }
-                .setNegativeButton("稍后", null)
-                .show()
+            showUpdateOverlay(info)
         } else {
             toast("更新检查失败，请稍后重试或前往 GitHub 查看")
             // 点击失败徽标后重试一次
             updateChecked = false
             checkUpdateSilent()
         }
+    }
+
+    /** 自绘更新弹窗（与 App 其余浮层同风格，不用系统 AlertDialog）：标题 + Markdown 渲染的更新日志（可滚动）+ 去下载 / 稍后 */
+    private fun showUpdateOverlay(info: UpdateInfo) {
+        if (updateOverlay == null) {
+            val ov = FrameLayout(this).apply {
+                visibility = View.GONE
+                setBackgroundColor(0x66000000.toInt())   // 半透明遮罩
+            }
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = roundedBg(CARD, 30)
+                setPadding(dp(26), dp(22), dp(26), dp(20))
+            }
+            card.addView(TextView(this).apply {
+                textSize = 19f
+                setTextColor(ACCENT)
+                gravity = Gravity.CENTER
+                setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+            // 更新日志区：Markdown 渲染 + 可滚动（高度上限屏高 40%，超出滚动查看）
+            updateOverlayLog = TextView(this).apply {
+                textSize = 13f
+                setTextColor(TEXT)
+                setLineSpacing(1.3f, 1.0f)
+                setVerticalScrollBarEnabled(true)
+                movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            }
+            val logMaxH = (resources.displayMetrics.heightPixels * 0.4f).toInt()
+            card.addView(updateOverlayLog, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, logMaxH
+            ).apply { topMargin = dp(12) })
+            // 按钮行：稍后（浅色）+ 去下载（主题色实心）
+            val btnRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            val laterBtn = button("稍后", LIGHT, TEXT, radius = 18)
+            laterBtn.setOnClickListener { ov.visibility = View.GONE }
+            btnRow.addView(laterBtn, LinearLayout.LayoutParams(0, dp(46), 1f).apply { rightMargin = dp(12) })
+            val downloadBtn = button("去下载", ACCENT, 0xFFFFFFFF.toInt(), radius = 18)
+            downloadBtn.setOnClickListener {
+                ov.visibility = View.GONE
+                val url = info.apkUrl ?: info.htmlUrl
+                if (url.isNotEmpty()) {
+                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                }
+            }
+            btnRow.addView(downloadBtn, LinearLayout.LayoutParams(0, dp(46), 1f))
+            card.addView(btnRow, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(18) })
+            ov.addView(card, FrameLayout.LayoutParams(
+                resources.displayMetrics.widthPixels - dp(48), FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ))
+            rootFrame.addView(ov, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+            updateOverlay = ov
+        }
+        // 首次打开卡片标题（版本号）
+        (updateOverlay?.getChildAt(0) as? android.view.ViewGroup)?.getChildAt(0)?.let { t ->
+            (t as? TextView)?.text = "发现新版本 ${info.version}"
+        }
+        updateOverlayLog?.text = markdownToSpanned(info.changelog.ifEmpty { "暂无更新说明" })
+        updateOverlay?.visibility = View.VISIBLE
+    }
+
+    /** 简易 Markdown → Spanned：支持 # 标题、**粗体**、`行内代码`、[链接](url)、- 列表、换行；
+     *  先转义 HTML 再套标签，避免更新日志里的特殊字符破坏渲染 */
+    private fun markdownToSpanned(md: String): android.text.Spanned {
+        var s = md
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+        s = s.replace(Regex("`([^`]+)`")) { "<code>${it.groupValues[1]}</code>" }
+        s = s.replace(Regex("\\*\\*([^*]+)\\*\\*")) { "<b>${it.groupValues[1]}</b>" }
+        s = s.replace(Regex("\\[([^\\]]+)\\]\\(([^)]+)\\)")) { "<a href=\"${it.groupValues[2]}\">${it.groupValues[1]}</a>" }
+        s = s.replace(Regex("(?m)^(#{1,6})\\s+(.+)$")) { m ->
+            val level = m.groupValues[1].length
+            val content = m.groupValues[2]
+            when (level) { 1 -> "<h1>$content</h1>"; 2 -> "<h2>$content</h2>"; else -> "<h3>$content</h3>" }
+        }
+        s = s.replace(Regex("(?m)^\\s*-\\s+(.+)$")) { "• ${it.groupValues[1]}" }
+        s = s.replace("\n", "<br>")
+        return android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_COMPACT)
     }
 
     // ------------------------------------------------------------------ 语音识别
