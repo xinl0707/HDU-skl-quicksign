@@ -21,7 +21,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.text.format.DateFormat
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -394,6 +393,8 @@ class MainActivity : Activity() {
                 statusText.text = "请在右上角「设置」中保存学号密码，将自动登录"
             }
             // 开屏静默检查更新：不阻塞主流程，有更新在设置旁显示红色"更新"徽标，失败显示"检查失败"
+            val ver = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
+            opLog("系统", "App 启动完成，界面就绪（版本 $ver）")
             checkUpdateSilent()
         } catch (t: Throwable) {
             // 崩溃兜底：写入文件并直接显示崩溃信息，便于用户反馈定位
@@ -431,9 +432,11 @@ class MainActivity : Activity() {
         loginProbeCooldownUntil = 0
         // 界面风格在设置页被切换时，重建界面让新主题生效（WebView 会自动重跑登录流程）
         val nowStyle = themeStyle()
+        opLog("界面", "回到主界面（当前主题=$nowStyle，上次应用=$lastAppliedStyle）")
         DebugLog.append("onResume: style=$nowStyle last=$lastAppliedStyle")
         if (nowStyle != lastAppliedStyle) {
             lastAppliedStyle = nowStyle
+            opLog("界面", "检测到主题切换（$nowStyle），重建界面使新主题生效")
             recreate()
             return
         }
@@ -506,6 +509,7 @@ class MainActivity : Activity() {
         isPaused = true
         // 离开主界面（设置页/课表/考勤/后台）：立即停止全部监听，任何非键盘界面都不监听
         stopListeningQuiet()
+        opLog("监听", "主界面切到后台/其他界面，已停止全部麦克风监听")
     }
 
     override fun onBackPressed() {
@@ -523,6 +527,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        opLog("系统", "主界面销毁，释放 WebView 与全部回调")
         pollRunning = false
         stopListeningQuiet()
         // 清理全部延迟回调（splash 淡出、轮询链、路由修正延迟等），防泄漏与销毁后回调崩溃
@@ -600,7 +605,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             background = roundedBg(ACCENT, 17)
             isClickable = true
-            setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
+            setOnClickListener {
+                opLog("界面", "点击右上角设置，打开设置页")
+                startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+            }
         }
         val titleBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2400,6 +2408,7 @@ class MainActivity : Activity() {
         filling = true
         stopListening()
         appendLog("submit: 提交 $code，已停监听（filling=true）")
+        opLog("提交", "提交签到码 $code（已停止语音监听）")
         lastFilledCode = code
         lastSubmitAt = System.currentTimeMillis()   // 结果判定窗口起点：URL 跳 detail = 成功，10 秒未跳 = 无效
         resultWatchActive = true
@@ -2473,6 +2482,7 @@ class MainActivity : Activity() {
         if (successHandling) return   // 防重入：resultWatch 分支与 handleState signed 分支同一轮都可能触发
         successHandling = true
         appendLog("sign succeeded: #/sign/in/detail")
+        opLog("提交", "签到成功：URL 跳转 detail 详情页")
         invalidShown = false                       // 若无效弹窗显示中（缓冲期内成功）→ 先关掉
         invalidOverlay?.visibility = View.GONE
         resultWatchActive = false
@@ -2539,6 +2549,7 @@ class MainActivity : Activity() {
     /** 签到码无效：3 秒未跳 detail → 弹「签到码无效（或网络超时）」弹窗（非 toast），后台继续缓冲检测 */
     private fun showInvalidOverlay() {
         appendLog("sign invalid: 3s no detail redirect, show invalid overlay")
+        opLog("提交", "签到码无效或网络超时（3 秒未跳详情页），弹出重试提示")
         hideResultWaiting()                        // 收掉结果等待转圈
         vibrateDouble()                            // 失败：快速震动两下
         statusText.text = "签到码无效，请重试"
@@ -2615,9 +2626,11 @@ class MainActivity : Activity() {
                         updateBadge?.background = roundedBg(0xFFE5484D.toInt(), 10)
                         updateBadge?.visibility = View.VISIBLE
                         appendLog("update: 发现新版本 ${info.version}（当前 $current）")
+                        opLog("更新", "发现新版本 v${info.version}（当前 $current）")
                     } else {
                         updateBadge?.visibility = View.GONE
                         appendLog("update: 已是最新版本（$current）")
+                        opLog("更新", "已是最新版本（$current）")
                     }
                 }.onFailure { e ->
                     updateInfo = null
@@ -2748,6 +2761,7 @@ class MainActivity : Activity() {
     private fun startMimoListening(auto: Boolean = false) {
         stopListeningQuiet()
         val key = credStore.mimoApiKey() ?: return
+        opLog("监听", "启动 MIMO 语音监听（${if (auto) "自动" else "手动"}，模型=${credStore.mimoAsrModel()}）")
         // 两步架构：ASR 专用模型纯转写 + flash 综合判断（用户确认改回，纯 flash 直出在安静环境下误报数字）
         val engine = MiMoSpeechEngine(key, credStore.mimoBaseUrl(), credStore.mimoAsrModel(), credStore.mimoModel())
         mimoEngine = engine
@@ -3066,6 +3080,8 @@ class MainActivity : Activity() {
     }
 
     private fun stopListening() {
+        if (!listening) return
+        opLog("监听", "停止 MIMO 语音监听（主动）")
         try { mimoEngine?.stop() } catch (e: Exception) {}
         mimoEngine = null
         listening = false
@@ -3212,7 +3228,11 @@ class MainActivity : Activity() {
 
     private fun appendLog(msg: String) {
         if (!credStore.debugEnabled()) return
-        val line = "${DateFormat.format("HH:mm:ss", System.currentTimeMillis())} $msg"
-        DebugLog.append(line)
+        DebugLog.append(msg)
+    }
+
+    /** 操作记录（不受调试开关限制，始终写入，便于回溯关键操作） */
+    private fun opLog(tag: String, msg: String) {
+        DebugLog.info(tag, msg)
     }
 }

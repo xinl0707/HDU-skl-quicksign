@@ -99,7 +99,9 @@ class SettingsActivity : Activity() {
                 }
                 credStore.setScheduleCacheIcs(text)
                 refreshScheduleStatus()
-                toast("课表已导入（${text.split("BEGIN:VEVENT").size - 1} 门课程）")
+                val cnt = text.split("BEGIN:VEVENT").size - 1
+                DebugLog.info("设置", "导入课表成功（$cnt 门课程）")
+                toast("课表已导入（$cnt 门课程）")
             } ?: toast("无法读取所选文件")
         } catch (e: Exception) {
             toast("导入失败：" + (e.message ?: "未知错误"))
@@ -246,6 +248,7 @@ class SettingsActivity : Activity() {
         // 首次引导模式：从主界面引导第三步进入，隐藏左上角返回、拦截系统返回键，
         // 只能通过右上角「保存」离开（防止用户在引导流程里乱点返回）
         firstRun = intent.getBooleanExtra("first_run", false)
+        DebugLog.info("设置", "打开设置页（${if (firstRun) "首次引导模式" else "常规模式"}）")
         // 状态栏/导航栏配色跟随主题风格，内容避开系统栏（edge-to-edge 适配）
         try {
             window.statusBarColor = BG
@@ -516,6 +519,7 @@ class SettingsActivity : Activity() {
                     getSharedPreferences("settings", MODE_PRIVATE).edit()
                         .putString(ThemePalette.KEY_STYLE, s).commit()
                     refreshStyleCards(s)
+                    DebugLog.info("设置", "切换主题风格为「${ThemePalette.styleLabel(s)}」（返回主界面后生效）")
                     toast("已切换，返回主界面后生效")
                 }
             }
@@ -565,6 +569,7 @@ class SettingsActivity : Activity() {
             credStore.clear()
             userInput.setText("")
             passInput.setText("")
+            DebugLog.info("设置", "清除已保存的账号密码")
             toast("账号已清除")
         }
         actionBlock.addView(clearBtn, LinearLayout.LayoutParams(
@@ -700,6 +705,7 @@ class SettingsActivity : Activity() {
         credStore.setMimoModel(mimoModelInput.text.toString().trim())
         credStore.setAutoListen(autoListenCheck.isChecked)
         credStore.setShowSpeechInfo(showSpeechInfoCheck.isChecked)
+        DebugLog.info("设置", "保存设置（自动登录=${autoLoginCheck.isChecked}，自动监听=${autoListenCheck.isChecked}，MIMO 模型=${credStore.mimoModel()}）")
         toast("设置已保存")
         if (close) finish()
         return true
@@ -711,6 +717,7 @@ class SettingsActivity : Activity() {
 
     /** 导出调试记录：日志全文 + 页面抓取详情，保存到本机并调起分享（发到微信/备忘录均可） */
     private fun exportDebug() {
+        DebugLog.info("设置", "导出调试记录")
         try {
             val sb = StringBuilder()
             sb.append("上课啦 调试导出 ")
