@@ -1,32 +1,34 @@
 package dev.xinl0707.quicksign
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.text.InputType
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
-import android.widget.CheckBox
+import android.view.animation.DecelerateInterpolator
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 
 /**
- * 账号与语音设置独立页面（主界面点右上角「设」进入）。
- * 内容分块卡片 + 可滚动：账号 / 语音识别（MIMO 云端）/ 课表导入 / 操作 / 调试。
- * 独立页面避免在主界面展开面板挤压网页预览。
+ * 设置页 v4.0（账号与安全 / 签到与语音 / 课表 / 外观 / 关于与调试）。
+ * 设计语言：iOS 式分组 + Tesla 式克制深色 + 主题色只出现在该出现的地方。
+ * 交互约定：Switch 替代 CheckBox、底部浮层替代 Toast、居中警示卡处理失败、
+ * 自绘弹层替代系统 AlertDialog、主题卡/开关带轻震动反馈、高级配置默认折叠。
  */
 class SettingsActivity : Activity() {
 
@@ -34,20 +36,41 @@ class SettingsActivity : Activity() {
     private lateinit var credStore: CredentialStore
     private lateinit var userInput: EditText
     private lateinit var passInput: EditText
-    private lateinit var autoLoginCheck: CheckBox
-    private lateinit var engineGroup: RadioGroup
     private lateinit var mimoKeyInput: EditText
     private lateinit var mimoUrlInput: EditText
     private lateinit var mimoAsrInput: EditText
     private lateinit var mimoModelInput: EditText
-    private lateinit var autoListenCheck: CheckBox
-    private lateinit var showSpeechInfoCheck: CheckBox
     private lateinit var scheduleStatusText: TextView
-    private lateinit var mimoBox: LinearLayout
     private lateinit var logText: TextView
+    private lateinit var rootFrame: FrameLayout
+    private var snackBar: View? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private var icsPickRequested = false   // 防止系统文件选择器返回时 activity 已重建导致重复读取
+
+    // 深色模式跟随系统；配色按「界面风格 × 深浅」从 ThemePalette 取
+    private val isNight: Boolean by lazy {
+        (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+    private fun themeStyle(): String =
+        getSharedPreferences("settings", MODE_PRIVATE)
+            .getString(ThemePalette.KEY_STYLE, ThemePalette.STYLE_DEFAULT) ?: ThemePalette.STYLE_DEFAULT
+
+    private val palette: ThemePalette.Palette by lazy { ThemePalette.palette(themeStyle(), isNight) }
+    private val ACCENT: Int get() = palette.accent
+    private val BG: Int get() = palette.bg
+    private val CARD: Int get() = palette.card
+    private val TEXT: Int get() = palette.text
+    private val SUB: Int get() = palette.sub
+    private val LIGHT: Int get() = palette.light
+    private val HINT: Int by lazy { if (isNight) 0xFF6B7078.toInt() else 0xFF9AA0A8.toInt() }
+    private val TRACK_OFF: Int by lazy { if (isNight) 0xFF4A4E55.toInt() else 0xFFD4D7DC.toInt() }
+    private val LOG_INFO: Int by lazy { if (isNight) 0xFF9FB4D0.toInt() else 0xFF4A6FA5.toInt() }
+    private val LOG_WARN: Int by lazy { if (isNight) 0xFFE2B93B.toInt() else 0xFFB7791F.toInt() }
+    private val LOG_ERR: Int by lazy { if (isNight) 0xFFF2555A.toInt() else 0xFFD93025.toInt() }
+
+    private val REQ_ICS = 9001
 
     /** 打开系统文件选择器选 .ics 课表文件（Android 11+ SAF，读文件无需存储权限） */
     private fun pickIcsFile() {
@@ -61,7 +84,7 @@ class SettingsActivity : Activity() {
             startActivityForResult(intent, REQ_ICS)
         } catch (e: Exception) {
             icsPickRequested = false
-            toast("无法打开文件选择器：" + (e.message ?: ""))
+            snack("无法打开文件选择器：" + (e.message ?: ""))
         }
     }
 
@@ -70,9 +93,11 @@ class SettingsActivity : Activity() {
         val ics = credStore.scheduleCacheIcs()
         if (ics.isNullOrBlank()) {
             scheduleStatusText.text = "尚未导入课表"
+            scheduleStatusText.setTextColor(LOG_ERR)
         } else {
             val count = ics.split("BEGIN:VEVENT").size - 1
-            scheduleStatusText.text = "已导入课表：$count 门课程"
+            scheduleStatusText.text = "已导入 $count 门课程"
+            scheduleStatusText.setTextColor(ACCENT)
         }
     }
 
@@ -94,72 +119,19 @@ class SettingsActivity : Activity() {
             contentResolver.openInputStream(uri)?.use { input ->
                 val text = input.bufferedReader(Charsets.UTF_8).readText()
                 if (!text.contains("BEGIN:VEVENT")) {
-                    toast("文件内容不是有效的 ICS 课表")
+                    snack("文件内容不是有效的 ICS 课表")
                     return
                 }
                 credStore.setScheduleCacheIcs(text)
                 refreshScheduleStatus()
                 val cnt = text.split("BEGIN:VEVENT").size - 1
                 DebugLog.info("设置", "导入课表成功（$cnt 门课程）")
-                toast("课表已导入（$cnt 门课程）")
-            } ?: toast("无法读取所选文件")
+                snack("课表已导入（$cnt 门课程）")
+            } ?: snack("无法读取所选文件")
         } catch (e: Exception) {
-            toast("导入失败：" + (e.message ?: "未知错误"))
+            snack("导入失败：" + (e.message ?: "未知错误"))
         }
     }
-
-    private val idMimo = View.generateViewId()
-    private val REQ_ICS = 9001
-
-    /** 带圆形感叹号提示的标签行：点击感叹号弹出说明对话框 */
-    private fun helpRow(label: String, help: String): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(TextView(this).apply {
-            text = label
-            textSize = 13f
-            setTextColor(SUB)
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-        row.addView(TextView(this).apply {
-            text = " ⓘ"
-            textSize = 13f
-            setTextColor(ACCENT)
-            setPadding(dp(2), dp(0), dp(0), dp(0))
-            setOnClickListener {
-                android.app.AlertDialog.Builder(this@SettingsActivity)
-                    .setTitle(label)
-                    .setMessage(help)
-                    .setPositiveButton("知道了", null)
-                    .show()
-            }
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-        return row
-    }
-
-    companion object {
-        // 注意：ACCENT 为实例属性（依赖 palette），见下方
-    }
-
-    // 深色模式跟随系统；配色按「界面风格 × 深浅」从 ThemePalette 取（延迟初始化，属性初始化时机早于系统资源绑定）
-    private val isNight: Boolean by lazy {
-        (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-                android.content.res.Configuration.UI_MODE_NIGHT_YES
-    }
-    private fun themeStyle(): String =
-        getSharedPreferences("settings", MODE_PRIVATE)
-            .getString(ThemePalette.KEY_STYLE, ThemePalette.STYLE_DEFAULT) ?: ThemePalette.STYLE_DEFAULT
-
-    private val palette: ThemePalette.Palette by lazy { ThemePalette.palette(themeStyle(), isNight) }
-    private val ACCENT: Int get() = palette.accent
-    private val BG: Int get() = palette.bg
-    private val CARD: Int get() = palette.card
-    private val TEXT: Int get() = palette.text
-    private val SUB: Int get() = palette.sub
-    private val LIGHT: Int get() = palette.light
-    private val HINT: Int by lazy { if (isNight) 0xFF6B7078.toInt() else 0xFF9AA0A8.toInt() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -168,7 +140,7 @@ class SettingsActivity : Activity() {
         // Android 13+ 手势返回/预测性返回不走 onBackPressed：首次引导模式下手势返回也要禁用
         if (firstRun && Build.VERSION.SDK_INT >= 33) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(0) {
-                toast("请点击右上角「保存」完成设置")
+                snack("请点击右上角「保存」完成设置")
             }
         }
     }
@@ -178,10 +150,11 @@ class SettingsActivity : Activity() {
         super.onDestroy()
     }
 
+    // ---------------------------------------------------------------- 基础绘制工具
+
     private fun dp(v: Number): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
-    /** 圆角矩形背景 */
     private fun roundedBg(color: Int, radius: Int): android.graphics.drawable.GradientDrawable =
         android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
@@ -189,28 +162,42 @@ class SettingsActivity : Activity() {
             setColor(color)
         }
 
-    private fun button(label: String, bg: Int, fg: Int, big: Boolean = false, radius: Int = 14): Button {
-        val b = Button(this)
-        b.text = label
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (big) 15f else 13f)
-        b.background = roundedBg(bg, radius)
-        b.setTextColor(fg)
-        b.isAllCaps = false
-        b.gravity = Gravity.CENTER
-        b.minHeight = dp(if (big) 46f else 40f)
-        b.setPadding(dp(10), 0, dp(10), 0)
-        return b
+    private fun vibrate(ms: Long = 15) {
+        try {
+            val v = getSystemService(VIBRATOR_SERVICE) as? Vibrator ?: return
+            if (Build.VERSION.SDK_INT >= 26) {
+                v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(ms)
+            }
+        } catch (e: Exception) {}
     }
 
-    private fun label(text: String): TextView {
-        val t = TextView(this)
-        t.text = text
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        t.setTextColor(SUB)
-        return t
+    private fun button(label: String, bg: Int, fg: Int, big: Boolean = false, radius: Int = 14): TextView =
+        TextView(this).apply {
+            text = label
+            textSize = if (big) 15f else 13f
+            setTextColor(fg)
+            gravity = Gravity.CENTER
+            background = roundedBg(bg, radius)
+            minHeight = dp(if (big) 46 else 40)
+            setPadding(dp(14), 0, dp(14), 0)
+            isClickable = true
+        }
+
+    private fun label(text: String, size: Float = 13f, color: Int = SUB): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = size
+            setTextColor(color)
+        }
+
+    private fun blockTitle(text: String): TextView = label(text, 15f, TEXT).apply {
+        setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
     }
 
-    /** 圆角输入框（深色下文字/提示配色适配） */
+    /** 圆角输入框（深色下文字/提示配色适配；聚焦时主题色描边 + 淡光晕） */
     private fun edit(hint: String, singleLine: Boolean = true, password: Boolean = false): EditText =
         EditText(this).apply {
             this.hint = hint
@@ -225,28 +212,258 @@ class SettingsActivity : Activity() {
             setHintTextColor(HINT)
             background = roundedBg(CARD, 14)
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            setText(credStore.username() ?: "")
+            // 聚焦态：主题色描边 + 恢复常态
+            onFocusChangeListener = View.OnFocusChangeListener { v, has ->
+                val bg = roundedBg(CARD, 14)
+                if (has) bg.setStroke(dp(2), ACCENT)
+                v.background = bg
+            }
         }
+
+    /** 自绘 Switch（iOS 风格）：44×26 胶囊 + 22 滑块，点击切换 + 180ms 动画 + 轻震动 */
+    private fun switchView(initial: Boolean, onChange: (Boolean) -> Unit): FrameLayout {
+        var state = initial
+        val track = FrameLayout(this).apply {
+            background = roundedBg(if (state) ACCENT else TRACK_OFF, 100)
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            isClickable = true
+        }
+        val knob = View(this).apply {
+            background = roundedBg(0xFFFFFFFF.toInt(), 100)
+            elevation = dp(1).toFloat()
+        }
+        track.addView(knob, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER_VERTICAL or Gravity.START))
+        track.setOnClickListener {
+            state = !state
+            vibrate(15)
+            track.background = roundedBg(if (state) ACCENT else TRACK_OFF, 100)
+            val targetX = if (state) track.width - knob.width - dp(4) else 0f
+            knob.animate().translationX(targetX.toFloat()).setDuration(180)
+                .setInterpolator(DecelerateInterpolator()).start()
+            onChange(state)
+        }
+        return track
+    }
+
+    /** 开关行：左标题（+可选副文案），右 Switch */
+    private fun switchRow(label: String, sub: String? = null, initial: Boolean, onChange: (Boolean) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(6), dp(2), dp(6))
+        }
+        val textCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        textCol.addView(label(label, 15f, TEXT))
+        if (sub != null) textCol.addView(label(sub, 12f, SUB))
+        row.addView(textCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(switchView(initial, onChange))
+        return row
+    }
 
     /** 分块卡片容器（圆角背景 + 内边距，视觉分组；标题行带主题色条） */
     private fun block(title: String): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = roundedBg(CARD, 20)
-        setPadding(dp(14), dp(12), dp(14), dp(12))
-        addView(TextView(this@SettingsActivity).apply {
-            text = title
-            textSize = 15f
-            setTextColor(TEXT)
-            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
-            setPadding(dp(0), dp(0), dp(0), dp(4))
-        }, LinearLayout.LayoutParams(
+        background = roundedBg(CARD, 18)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        val titleRow = LinearLayout(this@SettingsActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        titleRow.addView(View(this@SettingsActivity).apply {
+            background = roundedBg(ACCENT, 100)
+        }, LinearLayout.LayoutParams(dp(4), dp(16)))
+        titleRow.addView(blockTitle(title), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(8) })
+        addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
+        ).apply { bottomMargin = dp(6) })
     }
 
+    // ---------------------------------------------------------------- 弹层系统（替代 Toast / AlertDialog）
+
+    /** 底部浮层提示（成功/普通信息）：上滑淡入，2.2s 后自动下滑消失 */
+    private fun snack(msg: String) {
+        snackBar?.let { rootFrame.removeView(it) }
+        val bar = TextView(this).apply {
+            text = msg
+            textSize = 14f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            background = roundedBg(0xE6323A3F.toInt(), 16)
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+        }
+        val lp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        )
+        lp.leftMargin = dp(20); lp.rightMargin = dp(20); lp.bottomMargin = dp(24)
+        rootFrame.addView(bar, lp)
+        bar.alpha = 0f
+        bar.translationY = dp(40).toFloat()
+        bar.animate().alpha(1f).translationY(0f).setDuration(200)
+            .setInterpolator(DecelerateInterpolator()).start()
+        bar.postDelayed({
+            bar.animate().alpha(0f).translationY(dp(40).toFloat()).setDuration(200)
+                .withEndAction { rootFrame.removeView(bar) }.start()
+        }, 2200)
+        snackBar = bar
+    }
+
+    /** 居中警示卡（失败/需确认场景）：半透明遮罩 + 圆角卡，点按钮关闭 */
+    private fun warn(title: String, msg: String) {
+        val mask = View(this).apply { setBackgroundColor(0x66000000.toInt()) }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(24), dp(20), dp(24), dp(18))
+        }
+        card.addView(label(title, 17f, TEXT).apply { setTypeface(android.graphics.Typeface.DEFAULT_BOLD) })
+        card.addView(label(msg, 14f, TEXT).apply { setLineSpacing(1.2f, 1.0f) }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(10) })
+        val ok = button("知道了", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
+        ok.setOnClickListener { rootFrame.removeView(mask); rootFrame.removeView(card) }
+        card.addView(ok, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
+        ).apply { topMargin = dp(16) })
+        rootFrame.addView(mask, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(card, FrameLayout.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(56), ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        card.alpha = 0f; card.scaleX = 0.94f; card.scaleY = 0.94f
+        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
+    }
+
+    /** 自绘菜单弹层（居中卡片 + 条目行，替代 AlertDialog items） */
+    private fun sheetMenu(title: String, items: List<Pair<String, () -> Unit>>) {
+        val mask = View(this).apply { setBackgroundColor(0x66000000.toInt()) }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(10), dp(12), dp(10), dp(10))
+        }
+        card.addView(label(title, 16f, TEXT).apply {
+            gravity = Gravity.CENTER
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(0), dp(6), dp(0), dp(8))
+        })
+        for ((i, item) in items.withIndex()) {
+            val it = TextView(this).apply {
+                text = item.first
+                textSize = 15f
+                setTextColor(TEXT)
+                gravity = Gravity.CENTER
+                background = roundedBg(0x00000000.toInt(), 12)
+                minHeight = dp(46)
+                isClickable = true
+                if (i > 0) elevation = 0f
+            }
+            it.setOnClickListener {
+                rootFrame.removeView(mask); rootFrame.removeView(card)
+                item.second()
+            }
+            card.addView(it, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { if (i > 0) topMargin = dp(4) })
+        }
+        val cancel = TextView(this).apply {
+            text = "取消"
+            textSize = 15f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            minHeight = dp(44)
+            isClickable = true
+        }
+        cancel.setOnClickListener { rootFrame.removeView(mask); rootFrame.removeView(card) }
+        card.addView(cancel, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(6) })
+        rootFrame.addView(mask, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(card, FrameLayout.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(56), ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        card.alpha = 0f; card.scaleX = 0.94f; card.scaleY = 0.94f
+        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
+    }
+
+    /** 帮助弹层（ⓘ 说明） */
+    private fun help(title: String, text: String) {
+        val mask = View(this).apply { setBackgroundColor(0x66000000.toInt()) }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(22), dp(18), dp(22), dp(16))
+        }
+        card.addView(label(title, 16f, TEXT).apply { setTypeface(android.graphics.Typeface.DEFAULT_BOLD) })
+        card.addView(label(text, 13f, SUB).apply { setLineSpacing(1.25f, 1.0f) }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
+        val ok = button("知道了", LIGHT, ACCENT, radius = 16)
+        ok.setOnClickListener { rootFrame.removeView(mask); rootFrame.removeView(card) }
+        card.addView(ok, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(42)
+        ).apply { topMargin = dp(14) })
+        rootFrame.addView(mask, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(card, FrameLayout.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(56), ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        card.alpha = 0f; card.scaleX = 0.94f; card.scaleY = 0.94f
+        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
+    }
+
+    /** 免责声明全文弹层（Markdown 渲染 + 可滚动） */
+    private fun showDisclaimer() {
+        val mask = View(this).apply { setBackgroundColor(0x66000000.toInt()) }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(22), dp(18), dp(22), dp(16))
+        }
+        card.addView(label("免责声明", 17f, TEXT).apply {
+            gravity = Gravity.CENTER
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        })
+        val body = TextView(this).apply {
+            text = Markdown.toSpanned(Disclaimer.TEXT_TEMPLATE.replace("__VER__", appVersion()))
+            textSize = 13f
+            setTextColor(TEXT)
+            setLineSpacing(1.3f, 1.0f)
+            setVerticalScrollBarEnabled(true)
+            movementMethod = android.text.method.ScrollingMovementMethod()
+        }
+        val maxH = (resources.displayMetrics.heightPixels * 0.52f).toInt()
+        card.addView(body, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, maxH
+        ).apply { topMargin = dp(10) })
+        val close = button("关闭", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
+        close.setOnClickListener { rootFrame.removeView(mask); rootFrame.removeView(card) }
+        card.addView(close, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
+        ).apply { topMargin = dp(12) })
+        rootFrame.addView(mask, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(card, FrameLayout.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(40), ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        card.alpha = 0f; card.scaleX = 0.94f; card.scaleY = 0.94f
+        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
+    }
+
+    private fun appVersion(): String =
+        try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
+
+    // ---------------------------------------------------------------- 页面构建
+
     private fun buildUi() {
-        // 首次引导模式：从主界面引导第三步进入，隐藏左上角返回、拦截系统返回键，
-        // 只能通过右上角「保存」离开（防止用户在引导流程里乱点返回）
         firstRun = intent.getBooleanExtra("first_run", false)
         DebugLog.info("设置", "打开设置页（${if (firstRun) "首次引导模式" else "常规模式"}）")
         // 状态栏/导航栏配色跟随主题风格，内容避开系统栏（edge-to-edge 适配）
@@ -258,7 +475,9 @@ class SettingsActivity : Activity() {
                 else window.decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
         } catch (e: Exception) {}
 
-        // 外层滚动：内容分块后超出屏幕可上下滚动
+        // 根容器：浮层（snack/警示卡/弹层）都挂在这层之上
+        rootFrame = FrameLayout(this).apply { setBackgroundColor(BG) }
+
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(BG)
@@ -266,375 +485,375 @@ class SettingsActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             fitsSystemWindows = true
-            setPadding(dp(16), dp(12), dp(16), dp(24))
+            setPadding(dp(20), dp(10), dp(20), dp(28))
         }
         scroll.addView(root)
+        rootFrame.addView(scroll, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // 标题栏：左返回按钮 + 居中标题 + 右侧等宽占位，保证标题视觉真正居中
-        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        // ---------- 大标题行：返回胶囊 + 「设置」28sp 粗 + 首次引导时右侧保存 ----------
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         if (firstRun) {
-            // 首次引导：隐藏返回按钮（用等宽占位保持标题居中），只能点右上角保存离开
-            titleRow.addView(View(this), LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+            titleRow.addView(View(this), LinearLayout.LayoutParams(dp(64), dp(40)))
         } else {
-            val backBtn = button("返回", LIGHT, ACCENT)
+            val backBtn = TextView(this).apply {
+                text = "‹"
+                textSize = 22f
+                setTextColor(TEXT)
+                gravity = Gravity.CENTER
+                background = roundedBg(CARD, 100)
+                setPadding(0, 0, 0, dp(2))
+                isClickable = true
+            }
             backBtn.setOnClickListener { finish() }
-            titleRow.addView(backBtn, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+            titleRow.addView(backBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
         }
-        val title = TextView(this).apply {
-            text = "设置"
-            textSize = 20f
-            setTextColor(TEXT)
-            gravity = Gravity.CENTER
+        titleRow.addView(label("设置", 28f, TEXT).apply {
+            gravity = Gravity.CENTER_VERTICAL
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            setPadding(dp(12), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (firstRun) {
+            val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
+            saveTop.setOnClickListener { save() }
+            titleRow.addView(saveTop, LinearLayout.LayoutParams(dp(64), dp(40)))
         }
-        titleRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        // 右上角保存按钮（原"操作"块里的保存设置移到这里；操作块已移除，仅保留调试块）
-        val saveTop = button("保存", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
-        saveTop.setOnClickListener { save() }
-        titleRow.addView(saveTop, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
+        ).apply { bottomMargin = dp(6) })
 
-        // ========== 账号块 ==========
-        val accountBlock = block("账号")
-        accountBlock.addView(label("学号（数字杭电账号）"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        userInput = edit("请输入学号")
+        // ========== 账号与安全 ==========
+        val accountBlock = block("账号与安全")
+        accountBlock.addView(label("学号（数字杭电账号）", 13f, SUB))
+        userInput = edit("请输入学号").apply { setText(credStore.username() ?: "") }
         autoSave(userInput)
         accountBlock.addView(userInput, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
-        accountBlock.addView(label("密码"), LinearLayout.LayoutParams(
+        accountBlock.addView(label("密码", 13f, SUB), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(10) })
-        passInput = edit("请输入密码", password = true).apply {
-            setText(credStore.password() ?: "")
+        val passRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
+        passInput = edit("请输入密码", password = true).apply { setText(credStore.password() ?: "") }
         autoSave(passInput)
-        accountBlock.addView(passInput, LinearLayout.LayoutParams(
+        passRow.addView(passInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val eyeBtn = TextView(this).apply {
+            text = "显示"
+            textSize = 12f
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+            background = roundedBg(LIGHT, 100)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            isClickable = true
+        }
+        eyeBtn.setOnClickListener {
+            val show = passInput.inputType == (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+            passInput.inputType = if (!show)
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            else
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            eyeBtn.text = if (!show) "隐藏" else "显示"
+            passInput.setSelection(passInput.text.length)
+        }
+        passRow.addView(eyeBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(8) })
+        accountBlock.addView(passRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
-        val showPw = CheckBox(this).apply {
-            text = "显示密码"
-            textSize = 13f
-            setTextColor(SUB)
-            setOnCheckedChangeListener { _, checked ->
-                passInput.inputType = if (checked)
-                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-                else
-                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                passInput.setSelection(passInput.text.length)
-            }
-        }
-        accountBlock.addView(showPw)
-        autoLoginCheck = CheckBox(this).apply {
-            text = "自动登录"
-            textSize = 13f
-            setTextColor(TEXT)
-            isChecked = credStore.autoLogin()
-            setOnCheckedChangeListener { _, _ -> autoSaveAll() }
-        }
-        accountBlock.addView(autoLoginCheck)
+        accountBlock.addView(switchRow("自动登录", "下次打开自动登录数字杭电", credStore.autoLogin()) { _ -> autoSaveAll() },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(6) })
         root.addView(accountBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
+        ).apply { bottomMargin = dp(12) })
 
-        // ========== 语音识别块 ==========
-        val voiceBlock = block("语音识别")
-        // 语音识别仅 MIMO 云端引擎（系统识别已移除）：默认 MIMO，没填 Key 禁用语音识别
-        voiceBlock.addView(label("语音识别引擎"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        engineGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val rbMimo = RadioButton(this).apply {
-            text = "Xiaomi-MIMO"
-            textSize = 13f
-            setTextColor(TEXT)
-            id = idMimo
-        }
-        engineGroup.addView(rbMimo)
-        engineGroup.check(rbMimo.id)
-        engineGroup.setOnCheckedChangeListener { _, checkedId ->
-            mimoBox.visibility = if (checkedId == rbMimo.id) View.VISIBLE else View.GONE
-        }
-        voiceBlock.addView(engineGroup)
-        autoListenCheck = CheckBox(this).apply {
-            text = "自动语音监听"
-            textSize = 13f
-            setTextColor(TEXT)
-            isChecked = credStore.autoListen()
-            setOnCheckedChangeListener { _, checked -> credStore.setAutoListen(checked) }
-        }
-        voiceBlock.addView(autoListenCheck, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-        showSpeechInfoCheck = CheckBox(this).apply {
-            text = "显示主页识别日志（开发者选项）"
-            textSize = 13f
-            setTextColor(TEXT)
-            isChecked = credStore.showSpeechInfo()
-            setOnCheckedChangeListener { _, checked -> credStore.setShowSpeechInfo(checked) }
-        }
-        voiceBlock.addView(showSpeechInfoCheck, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(2) })
-
-        // MIMO 配置区（语音识别仅 MIMO：配置区恒显示）
-        mimoBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.VISIBLE   // 语音识别仅 MIMO：配置区恒显示
-        }
-        mimoBox.addView(helpRow("MIMO API Key", "请到 mimo.mi.com 控制台注册获取 API Key\n在控制台左下角填入邀请码 ZPAF4Y 领取 10 元免费额度"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        mimoKeyInput = edit("sk-xxx", password = true).apply {
-            setText(credStore.mimoApiKey() ?: "")
-            textSize = 14f
-        }
-        autoSave(mimoKeyInput)
-        mimoBox.addView(mimoKeyInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        val showKey = CheckBox(this).apply {
-            text = "显示 Key"
-            textSize = 12f
-            setTextColor(SUB)
-            setOnCheckedChangeListener { _, checked ->
-                mimoKeyInput.inputType = if (checked)
+        // ========== 签到与语音 ==========
+        val voiceBlock = block("签到与语音")
+        voiceBlock.addView(switchRow("自动语音监听", "进入签到页自动开始监听", credStore.autoListen()) { c -> credStore.setAutoListen(c) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        voiceBlock.addView(switchRow("主页识别日志", "开发者选项 · 签到页显示识别过程", credStore.showSpeechInfo()) { c -> credStore.setShowSpeechInfo(c) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // MIMO 高级配置折叠组
+        val mimoCollapse = collapsible("MIMO 高级配置", "语音识别引擎：Xiaomi-MIMO（云端）", listOf(
+            "API Key" to "请到 mimo.mi.com 控制台注册获取；左下角填入邀请码 ZPAF4Y 可领 10 元免费额度",
+            "接口地址" to "默认 https://api.xiaomimimo.com/v1，一般无需修改",
+            "ASR 转写模型" to "语音转写专用模型（约 3 秒切片）",
+            "LLM 判断模型" to "对转写片段做综合判断、提取四位签到码的模型"
+        )) { content ->
+            // API Key（密码态 + 显示切换）
+            content.addView(label("API Key", 13f, SUB))
+            val keyRow = LinearLayout(this@SettingsActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            mimoKeyInput = edit("sk-xxx", password = true).apply {
+                setText(credStore.mimoApiKey() ?: "")
+                textSize = 14f
+            }
+            autoSave(mimoKeyInput)
+            keyRow.addView(mimoKeyInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val showKey = TextView(this@SettingsActivity).apply {
+                text = "显示"
+                textSize = 12f
+                setTextColor(ACCENT)
+                gravity = Gravity.CENTER
+                background = roundedBg(LIGHT, 100)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                isClickable = true
+            }
+            showKey.setOnClickListener {
+                val show = mimoKeyInput.inputType == (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+                mimoKeyInput.inputType = if (!show)
                     InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
                 else
                     InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                showKey.text = if (!show) "隐藏" else "显示"
                 mimoKeyInput.setSelection(mimoKeyInput.text.length)
             }
+            keyRow.addView(showKey, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(8) })
+            content.addView(keyRow, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) })
+            // 接口地址 / ASR / LLM
+            content.addView(label("接口地址", 13f, SUB), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) })
+            mimoUrlInput = edit("接口地址").apply { setText(credStore.mimoBaseUrl()); textSize = 13f }
+            autoSave(mimoUrlInput)
+            content.addView(mimoUrlInput, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) })
+            content.addView(label("ASR 转写模型", 13f, SUB), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) })
+            mimoAsrInput = edit("ASR 转写模型").apply { setText(credStore.mimoAsrModel()); textSize = 13f }
+            autoSave(mimoAsrInput)
+            content.addView(mimoAsrInput, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) })
+            content.addView(label("LLM 判断模型", 13f, SUB), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) })
+            mimoModelInput = edit("LLM 判断模型").apply { setText(credStore.mimoModel()); textSize = 13f }
+            autoSave(mimoModelInput)
+            content.addView(mimoModelInput, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) })
         }
-        mimoBox.addView(showKey)
-        mimoBox.addView(label("接口地址"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-        mimoUrlInput = edit("接口地址").apply {
-            setText(credStore.mimoBaseUrl())
-            textSize = 13f
-        }
-        autoSave(mimoUrlInput)
-        mimoBox.addView(mimoUrlInput, LinearLayout.LayoutParams(
+        voiceBlock.addView(mimoCollapse, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(4) })
-        mimoBox.addView(label("ASR 转写模型"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-        mimoAsrInput = edit("ASR 转写模型").apply {
-            setText(credStore.mimoAsrModel())
-            textSize = 13f
-        }
-        autoSave(mimoAsrInput)
-        mimoBox.addView(mimoAsrInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        mimoBox.addView(label("LLM 判断模型"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-        mimoModelInput = edit("LLM 判断模型").apply {
-            setText(credStore.mimoModel())
-            textSize = 13f
-        }
-        autoSave(mimoModelInput)
-        mimoBox.addView(mimoModelInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        voiceBlock.addView(mimoBox)
         root.addView(voiceBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
+        ).apply { bottomMargin = dp(12) })
 
-        // ========== 课表块 ==========
+        // ========== 课表 ==========
         val scheduleBlock = block("课表")
-        scheduleStatusText = TextView(this).apply {
-            textSize = 12f
-            setTextColor(SUB)
-        }
-        scheduleBlock.addView(scheduleStatusText, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(2) })
-        val importRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val importBtn = button("导入课表（.ICS）", LIGHT, ACCENT, big = true, radius = 18)
-        importBtn.setOnClickListener { pickIcsFile() }
-        importRow.addView(importBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        importRow.addView(TextView(this).apply {
-            text = " ⓘ"
-            textSize = 16f
-            setTextColor(ACCENT)
+        val schedRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(0), dp(0), dp(0))
-            setOnClickListener {
-                android.app.AlertDialog.Builder(this@SettingsActivity)
-                    .setTitle("导入课表")
-                    .setMessage("请到杭电助手 - 课表 - 订阅课表，复制链接到浏览器下载课表 ICS 文件")
-                    .setPositiveButton("知道了", null)
-                    .show()
-            }
-        }, LinearLayout.LayoutParams(
+        }
+        scheduleStatusText = TextView(this).apply {
+            textSize = 13f
+            setTextColor(ACCENT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }
+        schedRow.addView(scheduleStatusText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val importBtn = button("导入课表 (.ICS)", LIGHT, ACCENT, radius = 16)
+        importBtn.setOnClickListener { pickIcsFile() }
+        schedRow.addView(importBtn, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-        scheduleBlock.addView(importRow, LinearLayout.LayoutParams(
+        ).apply { marginStart = dp(8) })
+        scheduleBlock.addView(schedRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
+        ))
+        scheduleBlock.addView(label("杭电助手 → 课表 → 订阅课表，下载 ICS 文件后导入", 11f, SUB),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(4) })
         refreshScheduleStatus()
         root.addView(scheduleBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
+        ).apply { bottomMargin = dp(12) })
 
-        // ========== 界面风格块 ==========
-        val styleBlock = block("界面风格")
-        styleBlock.addView(label("选择界面风格"), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(8) })
-        val styleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val styleCards = mutableListOf<LinearLayout>()
-        // 色板卡片：每个主题 = 强调色圆点 + 名字，选中时整卡变强调色底、圆点变白（直观看到主题主色）
-        fun refreshStyleCards(selectedStyle: String) {
-            for (i in ThemePalette.STYLES.indices) {
-                val s = ThemePalette.STYLES[i]
-                val sel = s == selectedStyle
+        // ========== 外观 ==========
+        val styleBlock = block("外观")
+        styleBlock.addView(label("选择界面风格", 13f, SUB))
+        // 主题 2×3 网格（5 主题 → 3 + 2 两行）；切换主题只重建网格容器，不动块内其它视图
+        val gridContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun buildStyleGrid() {
+            gridContainer.removeAllViews()
+            val styles = ThemePalette.STYLES
+            val cur = themeStyle()
+            val gridRows = mutableListOf<LinearLayout>()
+            for (i in styles.indices) {
+                if (i % 3 == 0) {
+                    gridRows.add(LinearLayout(this@SettingsActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    })
+                }
+                val s = styles[i]
+                val sel = s == cur
                 val accent = ThemePalette.palette(s, isNight).accent
-                val c = styleCards[i]
-                c.background = roundedBg(if (sel) accent else LIGHT, 14)
-                c.elevation = if (sel) dp(3).toFloat() else 0f
-                (c.getChildAt(0) as View).background = roundedBg(if (sel) 0xFFFFFFFF.toInt() else accent, 100)
-                (c.getChildAt(1) as TextView).setTextColor(if (sel) 0xFFFFFFFF.toInt() else TEXT)
-            }
-        }
-        val curStyle = themeStyle()
-        for (s in ThemePalette.STYLES) {
-            val accent = ThemePalette.palette(s, isNight).accent
-            val sel = s == curStyle
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                background = roundedBg(if (sel) accent else LIGHT, 14)
-                elevation = if (sel) dp(3).toFloat() else 0f
-                setPadding(dp(6), dp(10), dp(6), dp(8))
-                setOnClickListener {
+                val card = LinearLayout(this@SettingsActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    background = roundedBg(if (sel) accent else LIGHT, 18)
+                    elevation = if (sel) dp(3).toFloat() else 0f
+                    setPadding(dp(4), dp(10), dp(4), dp(8))
+                    isClickable = true
+                }
+                card.addView(View(this@SettingsActivity).apply {
+                    background = roundedBg(if (sel) 0xFFFFFFFF.toInt() else accent, 100)
+                }, LinearLayout.LayoutParams(dp(32), dp(32)))
+                card.addView(label(ThemePalette.styleLabel(s), 11f, if (sel) 0xFFFFFFFF.toInt() else TEXT).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(dp(0), dp(6), dp(0), dp(0))
+                    setSingleLine(true)
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+                card.setOnClickListener {
+                    vibrate(15)
                     getSharedPreferences("settings", MODE_PRIVATE).edit()
                         .putString(ThemePalette.KEY_STYLE, s).commit()
-                    refreshStyleCards(s)
                     DebugLog.info("设置", "切换主题风格为「${ThemePalette.styleLabel(s)}」（返回主界面后生效）")
-                    toast("已切换，返回主界面后生效")
+                    snack("已切换「${ThemePalette.styleLabel(s)}」，返回主界面后生效")
+                    buildStyleGrid()
                 }
+                val row = gridRows.last()
+                val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                if (row.childCount > 0) lp.leftMargin = dp(8)
+                row.addView(card, lp)
             }
-            card.addView(View(this).apply {
-                background = roundedBg(if (sel) 0xFFFFFFFF.toInt() else accent, 100)
-            }, LinearLayout.LayoutParams(dp(24), dp(24)))
-            card.addView(TextView(this).apply {
-                text = ThemePalette.styleLabel(s)
-                textSize = 12f
-                setTextColor(if (sel) 0xFFFFFFFF.toInt() else TEXT)
-                gravity = Gravity.CENTER
-                setPadding(dp(0), dp(7), dp(0), dp(0))
-            }, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
-            styleCards.add(card)
-            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            if (styleCards.size > 1) lp.leftMargin = dp(6)
-            styleRow.addView(card, lp)
-        }
-        styleBlock.addView(styleRow, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-        // 隐藏首页底部状态显示：默认关（默认显示状态栏），开启后主界面底部状态文字隐藏
-        val hideStatusCheck = CheckBox(this).apply {
-            text = "隐藏首页底部状态显示"
-            textSize = 13f
-            setTextColor(SUB)
-            isChecked = credStore.hideStatusBar()
-            setOnCheckedChangeListener { _, checked ->
-                credStore.setHideStatusBar(checked)
-                toast("已保存")
+            for (r in gridRows) {
+                gridContainer.addView(r, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { if (gridContainer.childCount > 0) topMargin = dp(8) })
             }
         }
-        styleBlock.addView(hideStatusCheck, LinearLayout.LayoutParams(
+        styleBlock.addView(gridContainer, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
+        ).apply { topMargin = dp(4) })
+        buildStyleGrid()
+        styleBlock.addView(label("深色模式随系统自动切换", 11f, SUB), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(6) })
+        styleBlock.addView(switchRow("隐藏首页底部状态显示", null, credStore.hideStatusBar()) { c ->
+            credStore.setHideStatusBar(c)
+            snack("已保存")
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(4) })
         root.addView(styleBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
+        ).apply { bottomMargin = dp(12) })
 
-        // ========== 调试块 ==========
-        val debugBlock = block("调试")
-        val debugCheck = CheckBox(this).apply {
-            text = "调试日志"
-            textSize = 13f
-            setTextColor(SUB)
-            isChecked = credStore.debugEnabled()
-            setOnCheckedChangeListener { _, checked ->
-                credStore.setDebugEnabled(checked)
-                logText.visibility = if (checked) View.VISIBLE else View.GONE
-            }
-        }
-        debugBlock.addView(debugCheck)
+        // ========== 关于与调试 ==========
+        val aboutBlock = block("关于与调试")
+        aboutBlock.addView(switchRow("调试日志", "记录运行过程，导出可定位问题", credStore.debugEnabled()) { checked ->
+            credStore.setDebugEnabled(checked)
+            logText.visibility = if (checked) View.VISIBLE else View.GONE
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // 日志区：等宽字体 + 等级着色（I 信息青 / W 警告黄 / E 错误红）
         logText = TextView(this).apply {
-            textSize = 10f
+            textSize = 11f
             setTextIsSelectable(true)
             setTextColor(SUB)
             visibility = if (credStore.debugEnabled()) View.VISIBLE else View.GONE
             background = roundedBg(LIGHT, 12)
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-            // 日志可滚动：设置内部滚动方式 + 显示滚动条（外层 ScrollView 不吞 TextView 手势）
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            typeface = android.graphics.Typeface.MONOSPACE
+            setLineSpacing(0f, 1.1f)
             movementMethod = android.text.method.ScrollingMovementMethod()
             isVerticalScrollBarEnabled = true
         }
-        debugBlock.addView(logText, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(160)
-        ).apply { topMargin = dp(4) })
-
-        // 导出调试记录：日志全文 + 全部页面抓取详情（作为覆盖界面设计依据）
-        val exportBtn = button("导出调试记录", LIGHT, ACCENT)
-        exportBtn.setOnClickListener { exportDebug() }
-        debugBlock.addView(exportBtn, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-
-        // 弹窗测试：演示各类结果浮层（签到成功/签到码无效/等待转圈/大数字+彩带/Toast），便于核对样式与层级
-        val testBtn = button("弹窗测试", LIGHT, ACCENT, radius = 18)
-        testBtn.setOnClickListener {
-            val items = arrayOf("签到成功覆盖页", "签到码无效弹窗", "结果等待转圈", "大数字 + 彩带", "Toast 提示")
-            AlertDialog.Builder(this)
-                .setTitle("弹窗测试（返回主界面后触发）")
-                .setItems(items) { _, which ->
-                    val type = when (which) {
-                        0 -> "success"
-                        1 -> "invalid"
-                        2 -> "waiting"
-                        3 -> "bigcode"
-                        else -> "toast"
-                    }
-                    startActivity(Intent(this, MainActivity::class.java)
-                        .putExtra("test_overlay", type)
-                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-                }
-                .show()
+        aboutBlock.addView(logText, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(180)
+        ).apply { topMargin = dp(6) })
+        // 日志区右上角「清空」小按钮
+        val clearRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
         }
-        debugBlock.addView(testBtn, LinearLayout.LayoutParams(
+        val clearBtn = TextView(this).apply {
+            text = "清空日志"
+            textSize = 11f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            background = roundedBg(LIGHT, 100)
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            isClickable = true
+        }
+        clearBtn.setOnClickListener {
+            DebugLog.clear()
+            logText.text = "（日志已清空）"
+            snack("日志已清空")
+        }
+        clearRow.addView(clearBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        aboutBlock.addView(clearRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(4) })
+        // 导出 + 弹窗测试 双按钮行
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val exportBtn = button("导出调试记录", LIGHT, ACCENT, radius = 16)
+        exportBtn.setOnClickListener { exportDebug() }
+        btnRow.addView(exportBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val testBtn = button("弹窗测试", LIGHT, ACCENT, radius = 16)
+        testBtn.setOnClickListener {
+            sheetMenu("弹窗测试（返回主界面后触发）", listOf(
+                "签到成功覆盖页" to { launchTest("success") },
+                "签到码无效弹窗" to { launchTest("invalid") },
+                "结果等待转圈" to { launchTest("waiting") },
+                "大数字 + 彩带" to { launchTest("bigcode") },
+                "Toast 提示" to { launchTest("toast") }
+            ))
+        }
+        btnRow.addView(testBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            .apply { marginStart = dp(8) })
+        aboutBlock.addView(btnRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
-
-        root.addView(debugBlock, LinearLayout.LayoutParams(
+        // 免责声明 + 版本 行
+        val disclaimerRow = linkRow("免责声明", "查看完整版（随版本更新）") { showDisclaimer() }
+        aboutBlock.addView(disclaimerRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
+        val versionRow = linkRow("版本 ${appVersion()}", "GitHub 仓库 · xinl0707/HDU-skl-quicksign") {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/xinl0707/HDU-skl-quicksign")))
+            } catch (e: Exception) { snack("无法打开链接") }
+        }
+        aboutBlock.addView(versionRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(2) })
+        root.addView(aboutBlock, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        setContentView(scroll)
+        setContentView(rootFrame)
 
-        // 日志定时刷新（1 秒）：内容未变化不重设（避免打断用户正在滚动查看的位置）；
-        // 内容变化时保持原滚动位置，新日志追加在尾部，用户在底部时自然看到新内容
+        // 日志定时刷新（1 秒）：内容未变化不重设（避免打断用户正在滚动查看的位置）
         handler.post(object : Runnable {
             override fun run() {
                 if (logText.visibility == View.VISIBLE) {
                     val dump = DebugLog.dump()
                     if (dump != logText.text.toString()) {
                         val sy = logText.scrollY
-                        logText.text = dump
+                        logText.text = colorizeLog(dump)
                         logText.scrollTo(0, sy)
                     }
                 }
@@ -643,19 +862,113 @@ class SettingsActivity : Activity() {
         })
     }
 
+    /** 链接行：左侧标题 + 右侧 ›，点击触发动作 */
+    private fun linkRow(title: String, sub: String, onClick: () -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(label(title, 15f, TEXT))
+        col.addView(label(sub, 11f, SUB))
+        row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(label("›", 22f, SUB).apply { setPadding(dp(6), 0, dp(2), dp(2)) })
+        row.setOnClickListener { onClick() }
+        return row
+    }
+
+    /** 折叠组：标题行（▾ 箭头旋转 + 标题 + 副文案）+ 可展开内容，默认折叠 */
+    private fun collapsible(title: String, subtitle: String, helps: List<Pair<String, String>>, body: (LinearLayout) -> Unit): LinearLayout {
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(if (isNight) 0xFF23262B.toInt() else 0xFFF3F5F7.toInt(), 16)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        var expanded = false
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+        }
+        val arrow = TextView(this).apply {
+            text = "▸"
+            textSize = 14f
+            setTextColor(SUB)
+            setPadding(dp(4), 0, dp(8), 0)
+        }
+        header.addView(arrow)
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(label(title, 15f, TEXT))
+        col.addView(label(subtitle, 11f, SUB))
+        header.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(label("ⓘ", 14f, ACCENT).apply {
+            setPadding(dp(8), 0, 0, 0)
+            isClickable = true
+        }.also { infoBtn ->
+            infoBtn.setOnClickListener { help(title, helps.joinToString("\n") { (t, d) -> "$t：$d" }) }
+        })
+        val bodyBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        header.setOnClickListener {
+            expanded = !expanded
+            vibrate(10)
+            arrow.animate().rotation(if (expanded) 90f else 0f).setDuration(180).start()
+            if (expanded) {
+                bodyBox.visibility = View.VISIBLE
+                bodyBox.alpha = 0f
+                bodyBox.animate().alpha(1f).setDuration(220).start()
+            } else {
+                bodyBox.animate().alpha(0f).setDuration(180)
+                    .withEndAction { bodyBox.visibility = View.GONE }.start()
+            }
+        }
+        outer.addView(header)
+        outer.addView(bodyBox, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(4) })
+        body(bodyBox)
+        return outer
+    }
+
+    /** 日志着色：按行匹配 [I]/[W]/[E] 等级，给整行染对应颜色 */
+    private fun colorizeLog(dump: String): Spanned {
+        val sp = SpannableString(dump)
+        val levelColor = mapOf('I' to LOG_INFO, 'W' to LOG_WARN, 'E' to LOG_ERR)
+        try {
+            for (m in Regex("(?m)^(.*)\\[([IWED])\\]\\[([^\\]]+)\\] (.*)$").findAll(dump)) {
+                val level = m.groupValues[2][0]
+                levelColor[level]?.let { c ->
+                    sp.setSpan(ForegroundColorSpan(c), m.range.first, m.range.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
+        } catch (e: Exception) {}
+        return sp
+    }
+
+    private fun launchTest(type: String) {
+        startActivity(Intent(this, MainActivity::class.java)
+            .putExtra("test_overlay", type)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }
+
+    // ---------------------------------------------------------------- 保存逻辑
+
     /** 自动保存防抖：输入/开关改动 500ms 后统一落盘（账号密码加密保存，避免逐字符触发 Keystore） */
     private val credSaveRunnable = Runnable {
         val u = userInput.text.toString().trim()
         val p = passInput.text.toString()
         if (u.isNotEmpty() && p.isNotEmpty()) {
-            credStore.save(u, p, autoLoginCheck.isChecked)
+            credStore.save(u, p, credStore.autoLogin())
         }
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
         credStore.setMimoModel(mimoModelInput.text.toString().trim())
-        credStore.setAutoListen(autoListenCheck.isChecked)
-        credStore.setShowSpeechInfo(showSpeechInfoCheck.isChecked)
+        credStore.setAutoListen(credStore.autoListen())
+        credStore.setShowSpeechInfo(credStore.showSpeechInfo())
     }
 
     private fun autoSaveAll() {
@@ -664,7 +977,7 @@ class SettingsActivity : Activity() {
     }
 
     /** 给输入框挂自动保存（改动即存，无需点保存按钮） */
-    private fun autoSave(view: android.widget.EditText) {
+    private fun autoSave(view: EditText) {
         view.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -677,24 +990,20 @@ class SettingsActivity : Activity() {
         val u = userInput.text.toString().trim()
         val p = passInput.text.toString()
         if (u.isEmpty() || p.isEmpty()) {
-            toast("学号和密码不能为空")
+            warn("无法保存", "学号和密码不能为空")
             return false
         }
-        credStore.save(u, p, autoLoginCheck.isChecked)
+        credStore.save(u, p, credStore.autoLogin())
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
         credStore.setMimoModel(mimoModelInput.text.toString().trim())
-        credStore.setAutoListen(autoListenCheck.isChecked)
-        credStore.setShowSpeechInfo(showSpeechInfoCheck.isChecked)
-        DebugLog.info("设置", "保存设置（自动登录=${autoLoginCheck.isChecked}，自动监听=${autoListenCheck.isChecked}，MIMO 模型=${credStore.mimoModel()}）")
-        toast("设置已保存")
+        credStore.setAutoListen(credStore.autoListen())
+        credStore.setShowSpeechInfo(credStore.showSpeechInfo())
+        DebugLog.info("设置", "保存设置（自动登录=${credStore.autoLogin()}，自动监听=${credStore.autoListen()}，MIMO 模型=${credStore.mimoModel()}）")
+        snack("设置已保存")
         if (close) finish()
         return true
-    }
-
-    private fun toast(msg: String) {
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
     /** 导出调试记录：日志全文 + 页面抓取详情，保存到本机并调起分享（发到微信/备忘录均可） */
@@ -714,7 +1023,7 @@ class SettingsActivity : Activity() {
             // 1) 保存到安卓「下载」目录（Download/上课啦），API 29+ 用 MediaStore 免权限；低版本写应用目录兜底
             var savedPath = ""
             try {
-                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                if (Build.VERSION.SDK_INT >= 29) {
                     val values = android.content.ContentValues().apply {
                         put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "debug_${System.currentTimeMillis()}.txt")
                         put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
@@ -747,9 +1056,9 @@ class SettingsActivity : Activity() {
                 putExtra(Intent.EXTRA_TEXT, content)
             }
             startActivity(Intent.createChooser(send, "导出调试记录"))
-            toast(if (savedPath.isNotEmpty()) "已保存：$savedPath" else "已调起分享")
+            snack(if (savedPath.isNotEmpty()) "已保存：$savedPath" else "已调起分享")
         } catch (e: Exception) {
-            toast("导出失败：${e.message}")
+            snack("导出失败：${e.message}")
         }
     }
 
@@ -757,7 +1066,7 @@ class SettingsActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (firstRun) {
-            toast("请点击右上角「保存」完成设置")
+            snack("请点击右上角「保存」完成设置")
         } else {
             super.onBackPressed()
         }
