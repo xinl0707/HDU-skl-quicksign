@@ -97,11 +97,16 @@ class SignRecordsActivity : Activity() {
         val countBadgeLocal = TextView(this).apply {
             text = "共 ${recordStore.count()} 条"
             textSize = 12f
-            setTextColor(SUB)
-            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+            background = roundedBg(LIGHT, 100)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         countBadge = countBadgeLocal
-        titleRow.addView(countBadgeLocal, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        titleRow.addView(countBadgeLocal, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
         root.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
@@ -130,26 +135,18 @@ class SignRecordsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
 
-        // ========== 底部固定数据边界说明（不随列表滚动） ==========
-        root.addView(TextView(this).apply {
-            text = "仅记录使用本 APP 完成的签到，不含网页端及其他设备操作；记录仅保存在本机"
-            textSize = 11f
-            setTextColor(SUB)
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-
         setContentView(root)
     }
 
     /** 单条记录卡片：
-     *  行 1 = 标签行（状态徽标 + 签到方式标签，放大占满一行，左右两端排布）；
-     *  行 2 = 课程名 + 上课时间（右侧）；
-     *  行 3 = 签到时间/码 + 删除按钮 */
+     *  行 1 = 标签行：状态徽标 + 课程名（中间、大号）+ 签到方式标签（右侧、放大）；
+     *  行 2 = 课程时间（文案「课程时间：MM月dd日 HH:mm」）；
+     *  行 3 = 签到时间 + 签到码（统一格式、卡片间对齐）+ 删除按钮；
+     *  行 4 = 考勤统计（成功且有数据时显示） */
     private fun recordCard(rec: SignRecord): LinearLayout {
-        val timeFmt = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
-        val hmFmt = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
+        val timeFmt = SimpleDateFormat("MM月dd日 HH:mm", Locale.CHINA)
+        val hmFmt = SimpleDateFormat("HH:mm", Locale.CHINA)
+        val ymdFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
 
         // 状态徽标：颜色与文案按状态区分（成功=主题色 / 码无效=红 / 输入失败=橙）
         val (badgeColor, badgeText) = when (rec.status) {
@@ -169,7 +166,7 @@ class SignRecordsActivity : Activity() {
             }
         }
 
-        // 行 1：标签行——左侧状态徽标、右侧签到方式标签，均放大并占满一行
+        // 行 1：状态徽标 + 课程名（中间，大号） + 签到方式标签（右侧，放大）
         val row1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -186,10 +183,21 @@ class SignRecordsActivity : Activity() {
         row1.addView(badge, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
-        // 中间弹性空白，让右侧标签顶到行尾
-        row1.addView(View(this), LinearLayout.LayoutParams(
-            0, dp(1), 1f
-        ))
+        // 课程名：徽标与方式标签之间，大号加粗、超长截断
+        row1.addView(TextView(this).apply {
+            text = rec.courseName.ifEmpty { "课程名未知" }
+            textSize = if (rec.courseName.isEmpty()) 14f else 18f
+            setTextColor(if (rec.courseName.isEmpty()) SUB else TEXT)
+            gravity = Gravity.CENTER_VERTICAL
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTypeface(
+                if (rec.courseName.isEmpty()) android.graphics.Typeface.DEFAULT
+                else android.graphics.Typeface.DEFAULT_BOLD
+            )
+        }, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { marginStart = dp(10); marginEnd = dp(10) })
         val methodTag = TextView(this).apply {
             text = if (rec.method == SignRecord.METHOD_VOICE) "语音签到" else "键盘签到"
             textSize = 13f
@@ -201,49 +209,25 @@ class SignRecordsActivity : Activity() {
         }
         row1.addView(methodTag, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { marginStart = dp(8) })
+        ))
         card.addView(row1, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        // 行 2：课程名（左，可截断） + 上课时间（右，SUB 小字）
+        // 行 2：课程时间（带月日，文案「课程时间：MM月dd日 HH:mm - HH:mm」）
         val courseTime = if (rec.courseStart > 0 && rec.courseEnd > 0)
-            "${timeFmt.format(Date(rec.courseStart))} - ${hmFmt.format(Date(rec.courseEnd)).substring(0, 5)}"
-        else "上课时间未知"
-        val row2 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        row2.addView(TextView(this).apply {
-            text = rec.courseName.ifEmpty { "课程名未知" }
-            textSize = if (rec.courseName.isEmpty()) 13f else 16f
-            setTextColor(if (rec.courseName.isEmpty()) SUB else TEXT)
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(
-                if (rec.courseName.isEmpty()) android.graphics.Typeface.DEFAULT
-                else android.graphics.Typeface.DEFAULT_BOLD
-            )
-        }, LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
-        ))
-        row2.addView(TextView(this).apply {
-            text = courseTime
-            textSize = 12f
-            setTextColor(SUB)
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { marginStart = dp(8) })
-        card.addView(row2, LinearLayout.LayoutParams(
+            "课程时间：${timeFmt.format(Date(rec.courseStart))} - ${hmFmt.format(Date(rec.courseEnd))}"
+        else "课程时间：未知"
+        card.addView(subLine(courseTime), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(6) })
 
-        // 行 3：签到时间 + 码（左） + 删除按钮（右）
+        // 行 3：签到时间（带年月日）+ 签到码（统一格式，卡片间对齐）+ 删除按钮
         val row3 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        row3.addView(subLine("签到：${hmFmt.format(Date(rec.tsResult))}   码 ${rec.code.ifEmpty { "—" }}"),
+        row3.addView(subLine("签到时间：${ymdFmt.format(Date(rec.tsResult))}   签到码：${rec.code.ifEmpty { "—" }}"),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val delBtn = TextView(this).apply {
             text = "删除"

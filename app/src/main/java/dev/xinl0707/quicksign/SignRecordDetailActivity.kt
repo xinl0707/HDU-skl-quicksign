@@ -105,10 +105,15 @@ class SignRecordDetailActivity : Activity() {
         val idBadge = TextView(this).apply {
             text = "#${rec.id}"
             textSize = 12f
-            setTextColor(SUB)
-            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+            background = roundedBg(LIGHT, 100)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
-        titleRow.addView(idBadge, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        titleRow.addView(idBadge, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
         root.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
@@ -150,9 +155,9 @@ class SignRecordDetailActivity : Activity() {
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         // ========== 课程信息卡 ==========
-        val dtFmt = SimpleDateFormat("MM-dd EEE", Locale.CHINA)
+        val dtFmt = SimpleDateFormat("yyyy-MM-dd EEE", Locale.CHINA)
         val hmFmt = SimpleDateFormat("HH:mm", Locale.CHINA)
-        val secFmt = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
+        val secFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
         val courseBlock = block("课程信息")
         val courseTime = if (rec.courseStart > 0 && rec.courseEnd > 0)
             "${dtFmt.format(Date(rec.courseStart))}  ${hmFmt.format(Date(rec.courseStart))} - ${hmFmt.format(Date(rec.courseEnd))}"
@@ -180,23 +185,41 @@ class SignRecordDetailActivity : Activity() {
         val methodText = if (rec.method == SignRecord.METHOD_VOICE) "语音签到（MIMO 识别）" else "键盘签到（手动输入）"
         val submitText = if (rec.tsSubmit > 0) secFmt.format(Date(rec.tsSubmit)) else "—"
         val resultText = if (rec.tsResult > 0) secFmt.format(Date(rec.tsResult)) else "—"
-        // 语音签到：插入「识别依据」块——完整 MIMO 转写原文 + 醒目提取结果，便于回溯识别形式与原始内容
-        if (rec.method == SignRecord.METHOD_VOICE && rec.asrText.isNotBlank()) {
+        // 语音签到：插入「识别依据」块——完整 MIMO 转写原文 + 判定过程说明 + 醒目提取结果
+        if (rec.method == SignRecord.METHOD_VOICE) {
             val asrBlock = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            val r1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            r1.addView(subLine("识别依据"), LinearLayout.LayoutParams(
-                dp(84), ViewGroup.LayoutParams.WRAP_CONTENT
-            ))
-            r1.addView(TextView(this).apply {
-                text = rec.asrText.trim()
-                textSize = 14f
-                setTextColor(TEXT)
-            }, LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
-            ))
-            asrBlock.addView(r1, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ))
+            if (rec.asrText.isNotBlank()) {
+                val r1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                r1.addView(subLine("转写原文"), LinearLayout.LayoutParams(
+                    dp(84), ViewGroup.LayoutParams.WRAP_CONTENT
+                ))
+                r1.addView(TextView(this).apply {
+                    text = rec.asrText.trim()
+                    textSize = 14f
+                    setTextColor(TEXT)
+                }, LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                ))
+                asrBlock.addView(r1, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ))
+            }
+            if (rec.note.isNotBlank()) {
+                val r2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                r2.addView(subLine("判定过程"), LinearLayout.LayoutParams(
+                    dp(84), ViewGroup.LayoutParams.WRAP_CONTENT
+                ))
+                r2.addView(TextView(this).apply {
+                    text = rec.note.trim()
+                    textSize = 13f
+                    setTextColor(SUB)
+                }, LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                ))
+                asrBlock.addView(r2, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(3) })
+            }
             asrBlock.addView(TextView(this).apply {
                 text = "提取结果 → ${rec.code.ifEmpty { "—" }}"
                 textSize = 13f
@@ -209,11 +232,20 @@ class SignRecordDetailActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(4) })
         }
+        // 判定耗时（结果-提交，毫秒转秒）
+        val costText = if (rec.tsSubmit > 0 && rec.tsResult >= rec.tsSubmit)
+            "${(rec.tsResult - rec.tsSubmit) / 1000} 秒"
+        else "—"
+        // 课表匹配情况
+        val matchText = if (rec.courseStart > 0 && rec.courseEnd > 0) "已匹配课表" else "未匹配课表"
         val rows = mutableListOf(
             "签到码" to rec.code.ifEmpty { "—" },
             "签到方式" to methodText,
             "提交时间" to submitText,
             "结果时间" to resultText,
+            "判定耗时" to costText,
+            "课表匹配" to matchText,
+            "记录编号" to "#${rec.id}",
             "App 版本" to rec.appVersion.ifEmpty { "—" }
         )
         for ((k, v) in rows) {

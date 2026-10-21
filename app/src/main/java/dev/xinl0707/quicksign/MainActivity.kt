@@ -2427,7 +2427,7 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 签到码输入
 
-    private fun submitCode(code: String, force: Boolean = false, source: String = SignRecord.METHOD_MANUAL, asrText: String = "") {
+    private fun submitCode(code: String, force: Boolean = false, source: String = SignRecord.METHOD_MANUAL, asrText: String = "", asrNote: String = "") {
         if (filling && !force) return
         if (!signReady) {
             toast("签到页未就绪，请稍候")
@@ -2437,6 +2437,7 @@ class MainActivity : Activity() {
         stopListening()
         lastSource = source
         lastAsrText = asrText
+        lastAsrNote = asrNote
         appendLog("submit: 提交 $code，已停监听（filling=true，来源=$source${if (asrText.isNotBlank()) "，识别依据=${asrText.take(80)}" else ""}）")
         opLog("提交", "提交签到码 $code（已停止语音监听）")
         lastFilledCode = code
@@ -2456,6 +2457,7 @@ class MainActivity : Activity() {
 
     /** 语音识别依据（最近一次语音提交时 MIMO 转写文本，写入签到记录追溯用） */
     private var lastAsrText: String = ""
+    private var lastAsrNote: String = ""   // 语音识别判定过程说明（随记录落库，详情页「识别依据」展示）
 
     private fun pollFillResult(gen: Int, attempt: Int) {
         if (gen != fillGen) return // 已被更新的输入取代
@@ -2638,7 +2640,8 @@ class MainActivity : Activity() {
                 hoursText = resultHoursText?.text?.toString().orEmpty(),
                 ratioText = resultRatioText?.text?.toString().orEmpty(),
                 appVersion = currentVersion(),
-                asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else ""
+                asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else "",
+                note = if (lastSource == SignRecord.METHOD_VOICE) lastAsrNote else ""
             )
             val id = recordStore.insert(rec)
             val bmp = captureSignShot() ?: buildSummaryShot(rec)   // 离屏截图失败 → 原生绘制摘要卡片图兜底
@@ -2665,7 +2668,8 @@ class MainActivity : Activity() {
                 tsSubmit = lastSubmitAt,
                 tsResult = now,
                 appVersion = currentVersion(),
-                asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else ""
+                asrText = if (lastSource == SignRecord.METHOD_VOICE) lastAsrText else "",
+                note = if (lastSource == SignRecord.METHOD_VOICE) lastAsrNote else ""
             )
             val id = recordStore.insert(rec)
             val bmp = buildSummaryShot(rec)
@@ -2682,9 +2686,12 @@ class MainActivity : Activity() {
     }
 
     /** 离屏截图：同一 UI 帧内 measure + layout + draw 到离屏 Bitmap。
-     *  不改变 WebView 可见性（不动签到面板布局）、不申请权限、不异步等待；
-     *  失败或机型不支持时返回 null（详情页降级显示文字快照） */
+     *  关键修正：①网页若被隐藏（INVISIBLE/GONE），临时置 VISIBLE 保证有真实尺寸；
+     *  ②绘制前切 SOFTWARE 层——硬件加速合成层无法离屏 draw 抓取（这是此前一直截不到网页的根因）；
+     *  ③绘制后立即恢复可见性与图层，不改变界面状态；失败或机型不支持时返回 null（降级摘要卡片图） */
     private fun captureSignShot(): Bitmap? {
+        val oldVis = webView.visibility
+        val oldLayer = webView.layerType
         return try {
             val dm = resources.displayMetrics
             val w = dm.widthPixels
@@ -2692,25 +2699,35 @@ class MainActivity : Activity() {
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
             canvas.drawColor(0xFFFFFFFF.toInt())   // 白底兜底（透明区域不花屏）
+            if (oldVis != View.VISIBLE) {
+                webView.visibility = View.VISIBLE
+            }
             webView.measure(
                 View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
             )
             webView.layout(0, 0, w, h)
+            webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)   // 软件层：让 draw 能真实抓取网页内容
             webView.draw(canvas)
             bmp
         } catch (e: Exception) {
-            DebugLog.warn("截图", "离屏截图失败（降级文字快照）：${e.message}")
+            DebugLog.warn("截图", "离屏截图失败（降级摘要卡片图）：${e.message}")
             null
+        } finally {
+            try {
+                webView.setLayerType(oldLayer, null)
+                webView.visibility = oldVis
+            } catch (e: Exception) {}
         }
     }
 
     /** 截图兜底：离屏截图失败时，把签到摘要绘制成一张卡片图（原生绘制，任何机型都能生成），
-     *  保证详情页「签到网页截图」区域始终有图可看；返回 null 仅当绘制本身异常 */
+     *  保证详情页「签到网页截图」区域始终有图可看；返回 null 仅当绘制本身异常。
+     *  布局用固定行高 + 统一基线间距，避免文字错位/重叠 */
     private fun buildSummaryShot(rec: SignRecord): Bitmap? {
         return try {
             val w = 1080
-            val h = 1560
+            val h = 1900
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
             val bg = if (isNight) 0xFF1C232E.toInt() else 0xFFFFFFFF.toInt()
@@ -2723,8 +2740,17 @@ class MainActivity : Activity() {
                     typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
                 }
             val line = if (isNight) 0xFF2A3341.toInt() else 0xFFEEF1F4.toInt()
+            val maxW = w - 160
+            // 统一文本行绘制：超长截断（保留省略号），避免越界与错位
+            fun row(text: String, y: Float, p: android.graphics.Paint) {
+                var s = text
+                while (p.measureText(s) > maxW && s.length > 1) s = s.dropLast(1)
+                if (s != text) s += "…"
+                canvas.drawText(s, 80f, y, p)
+            }
+            val sep: (Float) -> Unit = { y -> canvas.drawRect(80f, y, (w - 80).toFloat(), y + 6, paint(6f, line, false)) }
             // 顶部标签
-            canvas.drawText("· 网页截图占位 · 签到信息摘要 ·", 80f, 120f, paint(46f, SUB, false))
+            row("· 网页截图占位 · 签到信息摘要 ·", 120f, paint(46f, SUB, false))
             // 状态大字
             val statusColor = when (rec.status) {
                 SignRecord.STATUS_SUCCESS -> ACCENT
@@ -2736,59 +2762,43 @@ class MainActivity : Activity() {
                 SignRecord.STATUS_INVALID -> "签到码无效"
                 else -> "自动输入失败"
             }
-            canvas.drawText(statusText, 80f, 300f, paint(130f, statusColor, true))
-            // 课程名（超长截断）
+            row(statusText, 300f, paint(130f, statusColor, true))
+            // 课程名
             val course = rec.courseName.ifEmpty { "课程名未知" }
-            val cp = paint(if (rec.courseName.isEmpty()) 66f else 76f, TEXT, true)
-            val maxW = w - 160
-            var courseShown = course
-            while (cp.measureText(courseShown) > maxW && courseShown.length > 1) {
-                courseShown = courseShown.dropLast(1)
-            }
-            if (courseShown != course) courseShown += "…"
-            canvas.drawText(courseShown, 80f, 450f, cp)
-            // 分隔线
-            canvas.drawRect(80f, 560f, (w - 80).toFloat(), 566f, paint(6f, line, false))
-            // 考勤统计
+            row(course, 470f, paint(if (rec.courseName.isEmpty()) 66f else 76f, if (rec.courseName.isEmpty()) SUB else TEXT, true))
+            sep(580f)
+            // 考勤统计（成功） / 失败原因
             var y = 700f
             if (rec.status == SignRecord.STATUS_SUCCESS) {
-                if (rec.statsText.isNotBlank()) {
-                    canvas.drawText(rec.statsText.replace("    ", "   "), 80f, y, paint(56f, TEXT, false)); y += 110
-                }
-                if (rec.hoursText.isNotBlank()) {
-                    canvas.drawText(rec.hoursText, 80f, y, paint(56f, TEXT, false)); y += 110
-                }
-                if (rec.ratioText.isNotBlank()) {
-                    canvas.drawText("到课比例 ${rec.ratioText}", 80f, y, paint(56f, TEXT, false)); y += 110
-                }
+                if (rec.statsText.isNotBlank()) { row(rec.statsText, y, paint(56f, TEXT, false)); y += 110 }
+                if (rec.hoursText.isNotBlank()) { row(rec.hoursText, y, paint(56f, TEXT, false)); y += 110 }
+                if (rec.ratioText.isNotBlank()) { row("到课比例 ${rec.ratioText}", y, paint(56f, TEXT, false)); y += 110 }
             } else {
                 val reason = if (rec.status == SignRecord.STATUS_INVALID)
                     "提交后未跳转结果页，可能为码错误或网络超时" else "自动填入未获网页确认，请手动输入"
-                canvas.drawText(reason, 80f, y, paint(54f, SUB, false)); y += 110
+                row(reason, y, paint(54f, SUB, false)); y += 110
             }
-            y += 40
-            canvas.drawRect(80f, y, (w - 80).toFloat(), y + 6, paint(6f, line, false))
-            y += 120
+            sep(y + 40f)
+            y += 150f
             // 签到信息
-            canvas.drawText("签到码  ${rec.code.ifEmpty { "—" }}", 80f, y, paint(64f, TEXT, true)); y += 120
-            canvas.drawText(
+            row("签到码  ${rec.code.ifEmpty { "—" }}", y, paint(64f, TEXT, true)); y += 110
+            row(
                 if (rec.method == SignRecord.METHOD_VOICE) "识别方式  语音签到（MIMO 语音提取）" else "识别方式  键盘签到（手动输入）",
-                80f, y, paint(54f, SUB, false)
-            ); y += 104
+                y, paint(54f, SUB, false)
+            ); y += 110
             if (rec.asrText.isNotBlank()) {
-                val asr = rec.asrText.replace("\n", " ").trim()
-                var shown = asr
-                val ap = paint(48f, SUB, false)
-                while (ap.measureText(shown) > maxW && shown.length > 1) shown = shown.dropLast(1)
-                if (shown != asr) shown += "…"
-                canvas.drawText("识别依据  $shown", 80f, y, ap); y += 92
-                canvas.drawText("提取结果  ${rec.code.ifEmpty { "—" }}", 80f, y, paint(52f, TEXT, true)); y += 104
+                row("识别依据  ${rec.asrText.replace("\n", " ").trim()}", y, paint(48f, SUB, false)); y += 110
             }
-            if (rec.tsSubmit > 0) canvas.drawText("提交 ${timeFmt.format(java.util.Date(rec.tsSubmit))}", 80f, y, paint(48f, SUB, false))
-            y += 92
-            if (rec.tsResult > 0) canvas.drawText("结果 ${timeFmt.format(java.util.Date(rec.tsResult))}", 80f, y, paint(48f, SUB, false))
-            y += 120
-            canvas.drawText("App ${rec.appVersion}", 80f, y, paint(48f, SUB, false))
+            if (rec.note.isNotBlank()) {
+                row("判定过程  ${rec.note.replace("\n", " ").trim()}", y, paint(48f, SUB, false)); y += 110
+            }
+            if (rec.asrText.isNotBlank()) {
+                row("提取结果  ${rec.code.ifEmpty { "—" }}", y, paint(54f, ACCENT, true)); y += 110
+            }
+            val submit = if (rec.tsSubmit > 0) timeFmt.format(java.util.Date(rec.tsSubmit)) else "—"
+            val result = if (rec.tsResult > 0) timeFmt.format(java.util.Date(rec.tsResult)) else "—"
+            row("提交 $submit · 结果 $result", y, paint(48f, SUB, false)); y += 110
+            row("App ${rec.appVersion} · 记录 #${rec.id}", y, paint(48f, SUB, false))
             bmp
         } catch (e: Exception) {
             DebugLog.warn("截图", "摘要卡片图绘制失败：${e.message}")
@@ -3031,7 +3041,10 @@ class MainActivity : Activity() {
                         if (repeatPrefixMatch(tailSeg.substring(0, 4), tailSeg.substring(4))) {
                             val full = tailSeg.substring(0, 4)
                             appendLog("extract 命中 $quick 为重复报码尾部 → 历史长段前4位 $full → 直接提交，跳过 LLM")
-                            submitCode(full, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "))
+                            submitCode(
+                                full, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
+                                asrNote = "本地快速匹配：转写切片检测到连续四位「$quick」为重复报码的尾部，结合历史长段确认完整签到码「$full」，直接提交（未调用大模型）"
+                            )
                         } else {
                             appendLog("extract 命中 $quick 但历史长段无法确认完整码 → 交 LLM")
                             maybeLlmExtract()
@@ -3039,7 +3052,10 @@ class MainActivity : Activity() {
                         return
                     }
                     appendLog("extract 快速路径命中 $quick → 直接提交，跳过 LLM")
-                    submitCode(quick, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "))
+                    submitCode(
+                        quick, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
+                        asrNote = "本地快速匹配：转写切片中检测到连续四位「$quick」，符合连续四位规则，直接提交（未调用大模型）"
+                    )
                     return
                 }
                 maybeLlmExtract()
@@ -3098,8 +3114,9 @@ class MainActivity : Activity() {
                 appendLog("llm code: $code")
                 addSpeechInfo("综合", "判断为签到码 $code")
                 val asrSnapshot = combined   // clear 前先留底：记录识别依据
+                val asrNote = "AI 综合判定：本地未命中连续四位，结合最近 ${heardPool.size} 条 MIMO 转写切片，由大模型综合判定签到码为「$code」"
                 heardPool.clear()
-                submitCode(code, source = SignRecord.METHOD_VOICE, asrText = asrSnapshot)
+                submitCode(code, source = SignRecord.METHOD_VOICE, asrText = asrSnapshot, asrNote = asrNote)
             } else {
                 addSpeechInfo("综合", "暂无可信签到码，继续监听")
             }
