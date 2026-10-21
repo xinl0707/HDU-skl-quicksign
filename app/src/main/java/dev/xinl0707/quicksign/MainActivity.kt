@@ -2707,8 +2707,15 @@ class MainActivity : Activity() {
         (updateOverlay?.getChildAt(0) as? android.view.ViewGroup)?.getChildAt(0)?.let { t ->
             (t as? TextView)?.text = "发现新版本 ${info.version}"
         }
-        updateOverlayLog?.text = markdownToSpanned(info.changelog.ifEmpty { "暂无更新说明" })
-        updateOverlay?.visibility = View.VISIBLE
+        updateOverlayLog?.text = markdownToSpanned(info.changelog.ifEmpty { "更新详情请前往 GitHub Release 页面查看" })
+        // 显示动画：与其他浮层一致的缩放 + 淡入
+        updateOverlay?.apply {
+            visibility = View.VISIBLE
+            alpha = 0f
+            scaleX = 0.92f
+            scaleY = 0.92f
+            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
+        }
     }
 
     /** 简易 Markdown → Spanned：支持 # 标题、**粗体**、`行内代码`、[链接](url)、- 列表、换行；

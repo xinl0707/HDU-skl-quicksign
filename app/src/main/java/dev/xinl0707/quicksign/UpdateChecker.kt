@@ -103,7 +103,8 @@ object UpdateChecker {
         return null
     }
 
-    /** 降级路径：HEAD 请求 latest 页面，从 302 Location 提取 tag（不走 API、不限速） */
+    /** 降级路径：HEAD 请求 latest 页面，从 302 Location 提取 tag（不走 API、不限速）；
+     *  随后 GET 该 Release 页面，从 og:description 提取更新日志（尽力而为，失败则为空串） */
     private fun checkViaRedirect(currentVersion: String): UpdateInfo? {
         val conn = URL(LATEST_PAGE_URL).openConnection() as HttpURLConnection
         conn.requestMethod = "HEAD"
@@ -125,11 +126,36 @@ object UpdateChecker {
         val version = tag.removePrefix("v")
         if (version.isEmpty()) throw Exception("invalid tag: $tag")
 
+        val htmlUrl = "https://github.com/xinl0707/HDU-skl-quicksign/releases/tag/$tag"
+        // 从 Release 页面抓 og:description（GitHub 会把 release body 摘要放进去），避免弹窗更新日志空白
+        val changelog = fetchOgDescription(htmlUrl)
         if (isNewer(version, currentVersion)) {
-            val htmlUrl = "https://github.com/xinl0707/HDU-skl-quicksign/releases/tag/$tag"
-            return UpdateInfo(version, tag, "", htmlUrl, null)  // 降级路径无更新日志与直链
+            return UpdateInfo(version, tag, changelog, htmlUrl, null)  // 降级路径无 APK 直链
         }
         return null
+    }
+
+    /** GET release 页面，提取 og:description 的 content（HTML 实体反转义） */
+    private fun fetchOgDescription(pageUrl: String): String {
+        return try {
+            val conn = URL(pageUrl).openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
+            conn.connectTimeout = TIMEOUT_MS
+            conn.readTimeout = TIMEOUT_MS
+            conn.instanceFollowRedirects = true
+            if (conn.responseCode != 200) {
+                conn.disconnect()
+                return ""
+            }
+            val html = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            // 兼容 property 在前 / content 在前的两种顺序
+            val m = Regex("<meta[^>]*(?:property=[\"']og:description[\"'][^>]*content=[\"']([^\"']*)[\"']|content=[\"']([^\"']*)[\"'][^>]*property=[\"']og:description[\"'])[^>]*>").find(html)
+            val raw = if (m != null) (m.groupValues[1].ifEmpty { m.groupValues[2] }) else ""
+            raw.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
+        } catch (e: Exception) { "" }
     }
 
     /** 主次补丁三位整数比较：latest > current 返回 true */
