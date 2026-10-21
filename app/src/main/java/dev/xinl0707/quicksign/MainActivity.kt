@@ -2565,6 +2565,9 @@ class MainActivity : Activity() {
         signResultShown = true
         prevSigned = true
         signReady = false
+        // 隐藏四位码槽：码槽底部横线位于屏幕中部，会透过覆盖页半透明遮罩横穿圆角卡片（观感被"挡住"）；
+        // 覆盖页关闭后由签到页状态机（signReady=true）自动恢复显示
+        panelCodeDisplay?.visibility = View.GONE
         launchConfetti()   // 成功彩带（盖在覆盖页之上）
         val ov = resultOverlay ?: return
         ov.alpha = 0f
