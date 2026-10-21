@@ -2749,29 +2749,75 @@ class MainActivity : Activity() {
             s = Regex("(?i)\\b$en\\b").replace(s, d)
         }
         appendLog("extract 英文替换: ${s.take(200)}")
-        // 3. 最长连续标准数字字段（阿拉伯+中文数字字，中间不夹任何非数字字符）
-        val seg = longestDigitSegment(s)
-        if (seg == null) {
+        // 3. 提取所有数字段；仅当段间间隔只含标点/空白（逗号顿号等，不含任何实义文字）时拼接，
+        //    还原 ASR 断句拆开的连续报码（"一二三，四一二三" → 1234123）。"第一次""签到码是"等文字间隔不可拼。
+        val segs = mutableListOf<String>()
+        val gaps = mutableListOf<String>()
+        var pp = 0
+        var cur = StringBuilder()
+        while (pp < s.length) {
+            if (isDigitChar(s[pp])) {
+                cur.append(s[pp]); pp++
+            } else {
+                if (cur.isNotEmpty()) { segs.add(cur.toString()); cur = StringBuilder() }
+                val gap = StringBuilder()
+                while (pp < s.length && !isDigitChar(s[pp])) { gap.append(s[pp]); pp++ }
+                gaps.add(gap.toString())
+            }
+        }
+        if (cur.isNotEmpty()) segs.add(cur.toString())
+        if (segs.isEmpty()) {
             appendLog("extract 无连续数字 → null，交 LLM")
             return null
         }
-        appendLog("extract 最长连续数字段: $seg (${seg.length}位)")
-        val d = segToDigits(seg)
-        // 4. 本地快速路径（都转阿拉伯后判定）：
-        //    - 恰好 4 位 → 直接命中；
-        //    - >4 位且「前4位+剩余位」构成循环前缀重复（如 8147814 → 前4 8147 + 剩余 814 是 8147 的前缀重复）→ 完整码=前4位，本地命中；
-        //    - 其余交 LLM
-        if (d.length == 4) {
-            appendLog("extract 连续4位命中 → $d")
-            return d
+        // 按可拼间隔合并
+        val merged = mutableListOf<String>()
+        var curM = segToDigits(segs[0])
+        for (i in 1 until segs.size) {
+            val gap = if (i - 1 < gaps.size) gaps[i - 1] else ""
+            if (isPunctGap(gap)) curM += segToDigits(segs[i]) else { merged.add(curM); curM = segToDigits(segs[i]) }
         }
-        if (d.length > 4 && repeatPrefixMatch(d.substring(0, 4), d.substring(4))) {
-            val r = d.substring(0, 4)
-            appendLog("extract 长串${d.length}位循环重复 → 完整码 $r → 本地命中，跳过 LLM")
-            return r
+        merged.add(curM)
+        appendLog("extract 数字段: ${segs.joinToString(" | ")} → 可拼后: ${merged.joinToString(" | ")}")
+        // 4. 判定：优先循环重复长段（强证据）；其次唯一恰好4位段；多个4位段或无法确认 → 交 LLM
+        var cycleHit: String? = null
+        var fourCandidates = mutableListOf<String>()
+        for (m in merged) {
+            when {
+                m.length == 4 -> fourCandidates.add(m)
+                m.length > 4 && repeatPrefixMatch(m.substring(0, 4), m.substring(4)) && cycleHit == null -> {
+                    cycleHit = m.substring(0, 4)
+                    appendLog("extract 长串${m.length}位循环重复 → 完整码 $cycleHit")
+                }
+                else -> appendLog("extract 合并段 $m (${m.length}位) 无法本地确认")
+            }
         }
-        appendLog("extract 连续段${seg.length}位无法本地确认 → null，交 LLM")
+        if (cycleHit != null) {
+            appendLog("extract 循环命中 → $cycleHit → 本地提交，跳过 LLM")
+            return cycleHit
+        }
+        if (fourCandidates.size == 1) {
+            appendLog("extract 连续4位命中 → ${fourCandidates[0]}")
+            return fourCandidates[0]
+        }
+        if (fourCandidates.size > 1) {
+            appendLog("extract 多个4位段（${fourCandidates.joinToString("、")}）无法确定 → null，交 LLM")
+        } else {
+            appendLog("extract 无4位候选 → null，交 LLM")
+        }
         return null
+    }
+
+    /** 是否标准数字字（阿拉伯+中文数字字） */
+    private fun isDigitChar(c: Char): Boolean =
+        (c in '0'..'9') || c == '零' || c == '洞' || c == '幺' || c == '一' || c == '二' ||
+            c == '两' || c == '三' || c == '四' || c == '五' || c == '六' || c == '七' ||
+            c == '八' || c == '九'
+
+    /** 数字段之间的间隔是否只含标点/空白（可拼接），含任何实义文字/字母则不可拼 */
+    private fun isPunctGap(gap: String): Boolean {
+        val punct = "，。、！？；：,.!?;:'\"“”‘’（）()…～~·—-_=+/\\ \t\n"
+        return gap.all { it in punct }
     }
 
     /** 连续数字字段（可含中文数字字）→ 阿拉伯数字串 */
