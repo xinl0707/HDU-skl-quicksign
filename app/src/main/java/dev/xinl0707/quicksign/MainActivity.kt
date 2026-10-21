@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.location.Location
@@ -70,7 +71,7 @@ class MainActivity : Activity() {
         private const val DISCLAIMER_TEXT_TEMPLATE = """
 上课啦快捷签到 App 免责声明
 
-生效日期：2026 年 10 月 19 日
+生效日期：2026 年 10 月 22 日
 适用版本：v1.0 至 v__VER__ 全部历史版本及后续版本
 
 一、非官方声明
@@ -112,28 +113,35 @@ class MainActivity : Activity() {
 1. 课表功能通过导入 ICS 格式课表文件实现（可至杭电助手课表订阅获取），导入内容仅保存在本机，用于界面展示"当前课程/下一节课"提醒。
 2. 课表数据仅供参考，实际课程安排、上课时间、地点、教师等信息一律以学校教务系统或任课老师通知为准。因课表导入错误、文件格式问题或课程调整导致的显示不准确，开发者不承担责任。
 
-九、第三方服务
+九、签到记录功能
+1. 本 App 提供签到记录留存功能，用于在本地记录使用者通过本 App 完成的签到行为，包括但不限于课程名称、上课时间、签到时刻、签到码、签到方式（语音提取或手动键盘输入）、签到结果状态（签到成功、签到码无效、自动输入失败）以及签到成功时生成的网页截图。
+2. 所有签到记录及网页截图仅保存在使用者本机 App 内部存储空间，不经过任何服务器，不上传、不共享、不出境。截图仅在完成一次成功签到后于本机离屏生成，不读取相册、不申请额外存储权限。
+3. 签到记录可能因卸载本 App、清理应用数据、更换设备等原因永久丢失，开发者不提供任何云端备份、恢复或导出服务，使用者应自行知悉并妥善处理。
+4. 本功能仅记录使用本 App 完成的签到行为，不包含在网页端、其他设备或其他途径进行的签到，也不代表学校教务系统的权威签到结果；一切签到结果以学校「上课啦」系统及教务系统为准。
+5. 签到记录中的课程名称、上课时间等信息部分来源于使用者自行导入的课表文件（见第八条），可能存在不准确或缺失情况，仅供参考。
+
+十、第三方服务
 1. 本 App 除可选接 MIMO 云端语音识别服务外，还可能依赖系统语音识别引擎、系统定位服务、WebView 内核等操作系统级组件，其行为受设备厂商与系统版本影响。
 2. 开发者不对任何第三方服务（包括但不限于 MIMO、系统语音识别引擎、系统定位服务、WebView 组件）的可用性、准确性、数据安全、收费行为及隐私实践承担责任。
 
-十、权限说明
+十一、权限说明
 本 App 会申请麦克风权限（用于语音识别签到码）、定位权限（签到校验与定位显示需要）与网络权限（访问签到系统与 MIMO 服务）。上述权限仅用于实现本 App 的核心功能，不用于任何其他用途。拒绝授权可能导致语音签到、自动定位等功能不可用，请在使用前按引导完成授权。
 
-十一、软件质量与维护
+十二、软件质量与维护
 1. 本 App 按「现状」（AS IS）提供，开发者不对其可用性、稳定性、准确性、兼容性、安全性作任何明示或暗示的保证，亦不承诺适用于特定用途。
 2. 开发者会尽力修复已知问题，但没有义务提供持续更新、维护、技术支持或兼容性适配，并有权在任何时间停止更新、终止服务或下架本 App。
 3. 学校前端改版、系统安全策略调整或设备系统升级可能导致自动登录、自动输入、语音识别等功能失效；使用者可通过「设置 - 调试日志 - 导出调试记录」反馈问题，但不保证问题一定得到解决。
 
-十二、知识产权
+十三、知识产权
 1. 本 App 的源代码、界面设计、文档、品牌标识等知识产权归开发者所有，未经开发者书面许可，任何个人或组织不得复制、修改、分发、反编译、逆向工程或用于商业用途。
 2. 本 App 中涉及的学校名称、系统名称、第三方品牌、商标及服务名称（包括但不限于「上课啦」、数字杭电、MIMO、mimo.mi.com），均归其各自权利人所有，本声明不构成任何授权或关联声明。
 
-十三、法律适用与争议解决
+十四、法律适用与争议解决
 1. 本声明适用中华人民共和国法律。
 2. 使用者安装、使用本 App，即视为已阅读、理解并同意本免责声明的全部内容。如本声明部分条款被认定无效或不可执行，不影响其余条款的效力。
 3. 因使用本 App 产生的争议，应首先协商解决；协商不成的，提交开发者所在地有管辖权的人民法院处理。
 
-十四、变更与通知
+十五、变更与通知
 1. 开发者可能随时更新本免责声明，更新后的版本随新版本 App 一同发布，并适用于该版本及之后的使用行为；使用者应定期查看本声明。
 2. 本声明适用的版本范围随 App 版本自动更新，最新版本以 App 内展示为准。
 
@@ -172,6 +180,7 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private var webViewStarted = false   // WebView 是否已开始加载（首次引导流程完成保存后才加载）
     private lateinit var credStore: CredentialStore
+    private lateinit var recordStore: SignRecordStore
     private lateinit var statusText: TextView
 
     // 顶部栏：返回面板按钮（网页显示时可用）+ 设置入口（右上角圆形按钮）
@@ -299,6 +308,7 @@ class MainActivity : Activity() {
     private var manualCode = ""
     private var pendingPanelCode = "" // 网页未就绪时输满的码，就绪后自动补输
     private var lastFilledCode = ""
+    private var lastSource = SignRecord.METHOD_MANUAL // 最近一次提交来源（voice=语音提取 / manual=手动键盘），随记录落库
     private var clearedOnceForPage = false // 每次页面加载后只清一次网页密码框残留（页面加载后才允许执行 JS）
 
     private var lastToastKey = ""
@@ -356,6 +366,7 @@ class MainActivity : Activity() {
         trace("onCreate start")
         try {
             credStore = CredentialStore(this)
+            recordStore = SignRecordStore(this)
             lastAppliedStyle = themeStyle()
             // 首帧窗口背景直接跟随主题品牌色（styles.xml 静态色做不到），
             // 在 setContentView 前设置，消除开屏第一帧与 splash 的品牌色差
@@ -799,9 +810,19 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
+        // 底部双卡（同一行、同风格）：左「查看网页」（网页/签到面板切换）、右「查看记录」（签到记录列表）
+        val bottomRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         toggleWebBtn = button("查看网页", LIGHT, ACCENT, big = true)
         toggleWebBtn.setOnClickListener { toggleWebView() }
-        signPanel.addView(toggleWebBtn, LinearLayout.LayoutParams(
+        bottomRow.addView(toggleWebBtn, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { marginEnd = dp(5) })
+        val recordsBtn = button("查看记录", LIGHT, ACCENT, big = true)
+        recordsBtn.setOnClickListener { startActivity(Intent(this, SignRecordsActivity::class.java)) }
+        bottomRow.addView(recordsBtn, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { marginStart = dp(5) })
+        signPanel.addView(bottomRow, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { leftMargin = dp(16); rightMargin = dp(16); topMargin = dp(6); bottomMargin = dp(8) })
 
@@ -2399,7 +2420,7 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 签到码输入
 
-    private fun submitCode(code: String, force: Boolean = false) {
+    private fun submitCode(code: String, force: Boolean = false, source: String = SignRecord.METHOD_MANUAL) {
         if (filling && !force) return
         if (!signReady) {
             toast("签到页未就绪，请稍候")
@@ -2407,7 +2428,8 @@ class MainActivity : Activity() {
         }
         filling = true
         stopListening()
-        appendLog("submit: 提交 $code，已停监听（filling=true）")
+        lastSource = source
+        appendLog("submit: 提交 $code，已停监听（filling=true，来源=$source）")
         opLog("提交", "提交签到码 $code（已停止语音监听）")
         lastFilledCode = code
         lastSubmitAt = System.currentTimeMillis()   // 结果判定窗口起点：URL 跳 detail = 成功，10 秒未跳 = 无效
@@ -2432,6 +2454,7 @@ class MainActivity : Activity() {
             statusText.text = "自动输入超时，请手动输入"
             appendLog("fill 超时: 60 次轮询无网页确认，改手动")
             toast("自动输入超时，请手动输入")
+            saveInvalidRecord(SignRecord.STATUS_INJECT_FAIL)   // 自动输入失败 → 写入记录
             dismissBigCodeOverlay()
             return
         }
@@ -2467,6 +2490,7 @@ class MainActivity : Activity() {
                         addSpeechInfo("输入", "自动输入失败：$reason")
                         appendLog("fill fail: $reason")
                         toast("自动输入失败，请手动输入或直接在页面上操作")
+                        saveInvalidRecord(SignRecord.STATUS_INJECT_FAIL)   // 自动输入失败 → 写入记录
                         dismissBigCodeOverlay()
                     }
                 }
@@ -2498,6 +2522,7 @@ class MainActivity : Activity() {
                     Regex("旷课学时\\s*\\d+\\s*/\\s*课程总学时\\s*[1-9]\\d*").containsMatchIn(t)
                 if (dataLoaded || attempt >= 8) {
                     parseSignResult(t)
+                    saveSuccessRecord()   // 签到成功：解析数据 → 本地记录 → 离屏截图（失败不阻断）
                     showSignResultOverlay()
                     successHandling = false
                 } else {
@@ -2550,6 +2575,7 @@ class MainActivity : Activity() {
     private fun showInvalidOverlay() {
         appendLog("sign invalid: 3s no detail redirect, show invalid overlay")
         opLog("提交", "签到码无效或网络超时（3 秒未跳详情页），弹出重试提示")
+        saveInvalidRecord(SignRecord.STATUS_INVALID)   // 签到码无效 → 写入失败记录
         hideResultWaiting()                        // 收掉结果等待转圈
         vibrateDouble()                            // 失败：快速震动两下
         statusText.text = "签到码无效，请重试"
@@ -2568,6 +2594,91 @@ class MainActivity : Activity() {
         manualCode = ""
         updatePanelDisplay()
         statusText.text = "签到就绪"
+    }
+
+    // ------------------------------------------------------------------ 签到记录留存（v3.2.0）
+
+    /** 当前 App 版本名（记录追溯用） */
+    private fun currentVersion(): String =
+        try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+
+    /** 成功判定后：解析数据 → 本地记录 → 离屏截图（截图失败不阻断，降级文字快照）。
+     *  在 UI 线程调用（extract 回调链）；同一帧内完成，不影响覆盖页动画 */
+    private fun saveSuccessRecord() {
+        try {
+            val now = System.currentTimeMillis()
+            val courseName = resultCourseText?.text?.toString().orEmpty()
+            // 上课时间窗：从本地课表匹配（与首页课程卡片同规则，下课后 5 分钟内仍算该课）
+            val cur = scheduleCourses.firstOrNull { now >= it.start && now <= it.end + 5 * 60 * 1000L }
+            val rec = SignRecord(
+                status = SignRecord.STATUS_SUCCESS,
+                courseName = courseName,
+                courseStart = cur?.start ?: 0,
+                courseEnd = cur?.end ?: 0,
+                code = lastFilledCode,
+                method = lastSource,
+                tsSubmit = lastSubmitAt,
+                tsResult = now,
+                statsText = resultStatsText?.text?.toString().orEmpty(),
+                hoursText = resultHoursText?.text?.toString().orEmpty(),
+                ratioText = resultRatioText?.text?.toString().orEmpty(),
+                appVersion = currentVersion()
+            )
+            val id = recordStore.insert(rec)
+            val bmp = captureSignShot()
+            if (bmp != null) {
+                val path = recordStore.saveShot(id, bmp)
+                if (path != null) recordStore.updateShot(id, path)
+            }
+            opLog("记录", "签到成功已记录（$courseName · 码 $lastFilledCode · ${if (lastSource == SignRecord.METHOD_VOICE) "语音" else "手动"}）")
+        } catch (e: Exception) {
+            DebugLog.warn("记录", "成功记录写入失败：${e.message}")
+        }
+    }
+
+    /** 失败类记录：签到码无效（STATUS_INVALID）/ 自动输入失败（STATUS_INJECT_FAIL） */
+    private fun saveInvalidRecord(status: Int) {
+        try {
+            val now = System.currentTimeMillis()
+            val rec = SignRecord(
+                status = status,
+                code = lastFilledCode,
+                method = lastSource,
+                tsSubmit = lastSubmitAt,
+                tsResult = now,
+                appVersion = currentVersion()
+            )
+            recordStore.insert(rec)
+            opLog("记录", if (status == SignRecord.STATUS_INVALID)
+                "签到码无效已记录（码 $lastFilledCode）"
+            else "自动输入失败已记录（码 $lastFilledCode）")
+        } catch (e: Exception) {
+            DebugLog.warn("记录", "失败记录写入异常：${e.message}")
+        }
+    }
+
+    /** 离屏截图：同一 UI 帧内 measure + layout + draw 到离屏 Bitmap。
+     *  不改变 WebView 可见性（不动签到面板布局）、不申请权限、不异步等待；
+     *  失败或机型不支持时返回 null（详情页降级显示文字快照） */
+    private fun captureSignShot(): Bitmap? {
+        return try {
+            val dm = resources.displayMetrics
+            val w = dm.widthPixels
+            val h = dm.heightPixels
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            canvas.drawColor(0xFFFFFFFF.toInt())   // 白底兜底（透明区域不花屏）
+            webView.measure(
+                View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
+            )
+            webView.layout(0, 0, w, h)
+            webView.draw(canvas)
+            bmp
+        } catch (e: Exception) {
+            DebugLog.warn("截图", "离屏截图失败（降级文字快照）：${e.message}")
+            null
+        }
     }
 
     /** 显示签到完成覆盖页（淡入 + 成功彩带） */
@@ -2805,7 +2916,7 @@ class MainActivity : Activity() {
                         if (repeatPrefixMatch(tailSeg.substring(0, 4), tailSeg.substring(4))) {
                             val full = tailSeg.substring(0, 4)
                             appendLog("extract 命中 $quick 为重复报码尾部 → 历史长段前4位 $full → 直接提交，跳过 LLM")
-                            submitCode(full)
+                            submitCode(full, source = SignRecord.METHOD_VOICE)
                         } else {
                             appendLog("extract 命中 $quick 但历史长段无法确认完整码 → 交 LLM")
                             maybeLlmExtract()
@@ -2813,7 +2924,7 @@ class MainActivity : Activity() {
                         return
                     }
                     appendLog("extract 快速路径命中 $quick → 直接提交，跳过 LLM")
-                    submitCode(quick)
+                    submitCode(quick, source = SignRecord.METHOD_VOICE)
                     return
                 }
                 maybeLlmExtract()
@@ -2872,7 +2983,7 @@ class MainActivity : Activity() {
                 appendLog("llm code: $code")
                 addSpeechInfo("综合", "判断为签到码 $code")
                 heardPool.clear()
-                submitCode(code)
+                submitCode(code, source = SignRecord.METHOD_VOICE)
             } else {
                 addSpeechInfo("综合", "暂无可信签到码，继续监听")
             }
