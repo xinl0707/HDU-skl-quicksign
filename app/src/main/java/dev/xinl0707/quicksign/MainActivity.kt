@@ -1643,11 +1643,9 @@ class MainActivity : Activity() {
                 d.text = ch
                 d.visibility = View.VISIBLE
                 l.alpha = 0f
-                // 数字落入槽：轻微放大淡入，删除后重新输入也有反馈
-                d.scaleX = 1.25f
-                d.scaleY = 1.25f
-                d.alpha = 0.5f
-                d.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(160).start()
+                d.scaleX = 1f
+                d.scaleY = 1f
+                d.alpha = 1f
             }
         }
     }
