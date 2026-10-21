@@ -218,6 +218,10 @@ class MainActivity : Activity() {
     private var resultWatchStartAt = 0L     // 结果监听启动时间（5 秒超时判定签到码无效）
     private var resultWaiting = false       // 输码后结果判定中：键盘位显示大大大转圈过渡，键盘/横线隐藏
     private var successHandling = false     // 成功处理进行中（防 resultWatch 与 handleState 双路径重入）
+    // 版本更新检测：开屏静默检查 GitHub Releases，有更新在设置按钮旁显示红色"更新"徽标
+    private var updateBadge: TextView? = null    // 设置旁的更新提示徽标
+    private var updateInfo: UpdateInfo? = null   // 检测到的新版本信息
+    private var updateChecked = false            // 本次启动是否已检查过（避免 onResume 重复检查）
     // 首次启动引导（免责声明 + 权限 + 进设置），同意一次后不再弹出
     private var guideOverlay: FrameLayout? = null
     private var disclaimerCard: LinearLayout? = null
@@ -387,6 +391,8 @@ class MainActivity : Activity() {
             if (!credStore.hasCredentials()) {
                 statusText.text = "请在右上角「设置」中保存学号密码，将自动登录"
             }
+            // 开屏静默检查更新：不阻塞主流程，有更新在设置旁显示红色"更新"徽标，失败显示"检查失败"
+            checkUpdateSilent()
         } catch (t: Throwable) {
             // 崩溃兜底：写入文件并直接显示崩溃信息，便于用户反馈定位
             trace("CRASH: $t")
@@ -607,6 +613,21 @@ class MainActivity : Activity() {
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         titleBar.addView(backPanelBtn, LinearLayout.LayoutParams(dp(88), dp(38)).apply { rightMargin = dp(8) })
+        // 更新提示徽标：默认隐藏，开屏静默检测到新版本时显示红色"更新"，检测失败显示灰色"检查失败"
+        updateBadge = TextView(this).apply {
+            text = "更新"
+            textSize = 11f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            background = roundedBg(0xFFE5484D.toInt(), 10)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { onUpdateBadgeClick() }
+        }
+        titleBar.addView(updateBadge, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, dp(28)
+        ).apply { rightMargin = dp(8) })
         titleBar.addView(settingsBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
         root.addView(titleBar)
         // 标题栏下 1dp 主题色分隔线（页面结构更明确）
@@ -2567,6 +2588,62 @@ class MainActivity : Activity() {
         val isSso = host.contains("sso") || host.contains("cas")
         if (!isSso) {
             webView.loadUrl(SignInjector.HOME_URL)
+        }
+    }
+
+    // ------------------------------------------------------------------ 版本更新检测
+
+    /** 开屏静默检查更新：不阻塞主流程，有更新在设置旁显示红色"更新"徽标，失败显示"检查失败" */
+    private fun checkUpdateSilent() {
+        if (updateChecked) return
+        updateChecked = true
+        val current = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+        UpdateChecker.check(current) { result ->
+            runOnUiThread {
+                result.onSuccess { info ->
+                    if (info != null) {
+                        updateInfo = info
+                        updateBadge?.text = "更新"
+                        updateBadge?.setTextColor(0xFFFFFFFF.toInt())
+                        updateBadge?.background = roundedBg(0xFFE5484D.toInt(), 10)
+                        updateBadge?.visibility = View.VISIBLE
+                        appendLog("update: 发现新版本 ${info.version}（当前 $current）")
+                    } else {
+                        updateBadge?.visibility = View.GONE
+                        appendLog("update: 已是最新版本（$current）")
+                    }
+                }.onFailure { e ->
+                    updateInfo = null
+                    updateBadge?.text = "检查失败"
+                    updateBadge?.setTextColor(0xFF8B949E.toInt())
+                    updateBadge?.background = roundedBg(0xFF2D333B.toInt(), 10)
+                    updateBadge?.visibility = View.VISIBLE
+                    appendLog("update: 检查失败 — ${e.message}")
+                }
+            }
+        }
+    }
+
+    /** 点击更新徽标：有更新则弹窗展示更新日志 + 下载链接；检查失败则 toast 提示 */
+    private fun onUpdateBadgeClick() {
+        val info = updateInfo
+        if (info != null) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("发现新版本 ${info.version}")
+                .setMessage(info.changelog.ifEmpty { "暂无更新说明" })
+                .setPositiveButton("去下载") { _, _ ->
+                    val url = info.apkUrl ?: info.htmlUrl
+                    if (url.isNotEmpty()) {
+                        startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                    }
+                }
+                .setNegativeButton("稍后", null)
+                .show()
+        } else {
+            toast("更新检查失败，请稍后重试或前往 GitHub 查看")
+            // 点击失败徽标后重试一次
+            updateChecked = false
+            checkUpdateSilent()
         }
     }
 
