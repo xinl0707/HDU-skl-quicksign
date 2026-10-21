@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -119,6 +120,7 @@ class MainActivity : Activity() {
 3. 签到记录可能因卸载本 App、清理应用数据、更换设备等原因永久丢失，开发者不提供任何云端备份、恢复或导出服务，使用者应自行知悉并妥善处理。
 4. 本功能仅记录使用本 App 完成的签到行为，不包含在网页端、其他设备或其他途径进行的签到，也不代表学校教务系统的权威签到结果；一切签到结果以学校「上课啦」系统及教务系统为准。
 5. 签到记录中的课程名称、上课时间等信息部分来源于使用者自行导入的课表文件（见第八条），可能存在不准确或缺失情况，仅供参考。
+6. 自 v3.2.4 起，签到成功后的网页截图采用系统级屏幕截图通道（PixelCopy）实现。截图完成的瞬间，本 App 会临时将后台网页切换到前台显示约 0.5 秒（直观展示签到结果页面），随后自动恢复原有界面；该过程在签到成功判定后自动发生，属正常的界面过渡，不影响签到流程与签到结果，亦不包含本 App 界面外的任何屏幕内容。若设备或系统版本不支持该截图通道，本 App 会自动降级为文字信息摘要图，不影响签到记录的正常保存。截图仅保存在本机（见本条前文），不进行任何网络传输。
 
 十、第三方服务
 1. 本 App 除可选接 MIMO 云端语音识别服务外，还可能依赖系统语音识别引擎、系统定位服务、WebView 内核等操作系统级组件，其行为受设备厂商与系统版本影响。
@@ -2535,9 +2537,11 @@ class MainActivity : Activity() {
                     Regex("旷课学时\\s*\\d+\\s*/\\s*课程总学时\\s*[1-9]\\d*").containsMatchIn(t)
                 if (dataLoaded || attempt >= 8) {
                     parseSignResult(t)
-                    saveSuccessRecord()   // 签到成功：解析数据 → 本地记录 → 离屏截图（失败不阻断）
-                    showSignResultOverlay()
-                    successHandling = false
+                    // 先写记录 + 抓网页截图（异步完成后再弹覆盖页，避免覆盖页遮住截图画面）
+                    saveSuccessRecord(onDone = {
+                        showSignResultOverlay()
+                        successHandling = false
+                    })
                 } else {
                     handler.postDelayed({ extract(attempt + 1) }, 600)
                 }
@@ -2621,7 +2625,9 @@ class MainActivity : Activity() {
 
     /** 成功判定后：解析数据 → 本地记录 → 离屏截图（截图失败不阻断，降级文字快照）。
      *  在 UI 线程调用（extract 回调链）；同一帧内完成，不影响覆盖页动画 */
-    private fun saveSuccessRecord() {
+    /** 保存签到成功记录。截图走异步通道（露出网页 → PixelCopy 抓取 → 恢复），
+     *  截图完成或失败降级后才回调 onDone（用于衔接「弹签到完成覆盖页」，避免覆盖页遮住截图） */
+    private fun saveSuccessRecord(onDone: (() -> Unit)? = null) {
         try {
             val now = System.currentTimeMillis()
             val courseName = resultCourseText?.text?.toString().orEmpty()
@@ -2644,14 +2650,23 @@ class MainActivity : Activity() {
                 note = if (lastSource == SignRecord.METHOD_VOICE) lastAsrNote else ""
             )
             val id = recordStore.insert(rec)
-            val bmp = captureSignShot() ?: buildSummaryShot(rec)   // 离屏截图失败 → 原生绘制摘要卡片图兜底
-            if (bmp != null) {
-                val path = recordStore.saveShot(id, bmp)
-                if (path != null) recordStore.updateShot(id, path)
+            captureSignShotAsync { bmp ->
+                try {
+                    val shot = bmp ?: buildSummaryShot(rec)   // 真截图失败 → 原生绘制摘要卡片图兜底
+                    if (shot != null) {
+                        val path = recordStore.saveShot(id, shot)
+                        if (path != null) recordStore.updateShot(id, path)
+                    }
+                    opLog("记录", "签到成功已记录（$courseName · 码 $lastFilledCode · ${if (lastSource == SignRecord.METHOD_VOICE) "语音" else "手动"}）")
+                } catch (e: Exception) {
+                    DebugLog.warn("记录", "成功记录截图保存失败：${e.message}")
+                } finally {
+                    onDone?.invoke()
+                }
             }
-            opLog("记录", "签到成功已记录（$courseName · 码 $lastFilledCode · ${if (lastSource == SignRecord.METHOD_VOICE) "语音" else "手动"}）")
         } catch (e: Exception) {
             DebugLog.warn("记录", "成功记录写入失败：${e.message}")
+            onDone?.invoke()
         }
     }
 
@@ -2685,39 +2700,106 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 离屏截图：同一 UI 帧内 measure + layout + draw 到离屏 Bitmap。
-     *  关键修正：①网页若被隐藏（INVISIBLE/GONE），临时置 VISIBLE 保证有真实尺寸；
-     *  ②绘制前切 SOFTWARE 层——硬件加速合成层无法离屏 draw 抓取（这是此前一直截不到网页的根因）；
-     *  ③绘制后立即恢复可见性与图层，不改变界面状态；失败或机型不支持时返回 null（降级摘要卡片图） */
-    private fun captureSignShot(): Bitmap? {
-        val oldVis = webView.visibility
-        val oldLayer = webView.layerType
-        return try {
-            val dm = resources.displayMetrics
-            val w = dm.widthPixels
-            val h = dm.heightPixels
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bmp)
-            canvas.drawColor(0xFFFFFFFF.toInt())   // 白底兜底（透明区域不花屏）
-            if (oldVis != View.VISIBLE) {
-                webView.visibility = View.VISIBLE
-            }
-            webView.measure(
-                View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
-            )
-            webView.layout(0, 0, w, h)
-            webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)   // 软件层：让 draw 能真实抓取网页内容
-            webView.draw(canvas)
-            bmp
+    /** 网页截图（异步）：签到成功瞬间临时把网页真正显示到屏幕（露出底层 WebView），
+     *  等待一帧渲染后优先用 PixelCopy 从窗口合成层抓取真实网页画面（这是唯一能稳定
+     *  抓到 WebView 内容的通道——chromium 强制硬件合成，离屏 draw 无法读取）；
+     *  抓完立即恢复界面，再通过 onDone 回调继续（回调后才会弹签到完成覆盖页）。
+     *  任何失败路径都回调 null（降级摘要卡片图），并保证界面状态恢复。 */
+    private fun captureSignShotAsync(onDone: (Bitmap?) -> Unit) {
+        try {
+            val oldPanel = signPanelWrap?.visibility ?: View.VISIBLE
+            val oldStatus = statusWrap?.visibility ?: View.VISIBLE
+            val oldWeb = webView.visibility
+            // 露出网页（签到成功页此刻已渲染完成）；底部状态栏一并隐藏，保证截图干净
+            signPanelWrap?.visibility = View.GONE
+            statusWrap?.visibility = View.GONE
+            webView.visibility = View.VISIBLE
+            rootFrame.postDelayed({
+                var bmp: Bitmap? = null
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= 26) {
+                        val w = webView.width
+                        val h = webView.height
+                        if (w > 0 && h > 0) {
+                            val loc = IntArray(2)
+                            webView.getLocationInWindow(loc)
+                            bmp = pixelCopyCapture(
+                                android.graphics.Rect(loc[0], loc[1], loc[0] + w, loc[1] + h), w, h
+                            )
+                        }
+                    }
+                    // 降级：软件层同帧绘制（低版本机型或 PixelCopy 不支持时）
+                    if (bmp == null) {
+                        val dm = resources.displayMetrics
+                        val w = dm.widthPixels
+                        val h = dm.heightPixels
+                        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(b)
+                        canvas.drawColor(0xFFFFFFFF.toInt())
+                        val oldLayer = webView.layerType
+                        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                        webView.measure(
+                            View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                            View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
+                        )
+                        webView.layout(0, 0, w, h)
+                        webView.draw(canvas)
+                        webView.setLayerType(oldLayer, null)
+                        bmp = b
+                    }
+                } catch (e: Exception) {
+                    DebugLog.warn("截图", "网页截图失败（降级摘要卡片图）：${e.message}")
+                } finally {
+                    signPanelWrap?.visibility = oldPanel
+                    statusWrap?.visibility = oldStatus
+                    webView.visibility = oldWeb
+                }
+                onDone(bmp)
+            }, 260)
         } catch (e: Exception) {
-            DebugLog.warn("截图", "离屏截图失败（降级摘要卡片图）：${e.message}")
+            DebugLog.warn("截图", "截图准备异常（降级摘要卡片图）：${e.message}")
+            onDone(null)
+        }
+    }
+
+    /** PixelCopy 截图（反射调用）：精简版 android.jar 未打包 android.hardware.PixelCopy，
+     *  但真机（API 26+）必定存在该类。反射 + 动态代理调用 request() 从窗口合成层抓取
+     *  当前可见区域——WebView 强制硬件渲染，这是唯一能稳定抓到其内容的通道。
+     *  成功返回位图，失败/低版本返回 null（上层降级摘要卡片图）。 */
+    private fun pixelCopyCapture(rect: Rect, w: Int, h: Int): Bitmap? {
+        return try {
+            val cls = Class.forName("android.hardware.PixelCopy")
+            val listenerCls = Class.forName("android.hardware.PixelCopy\$OnPixelCopyFinishedListener")
+            val request = cls.getMethod(
+                "request", android.view.Window::class.java, Rect::class.java,
+                Bitmap::class.java, listenerCls
+            )
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var ok = false
+            // 动态代理实现回调接口：onPixelCopyFinished(resultCode, bitmap)
+            val proxy = java.lang.reflect.Proxy.newProxyInstance(
+                listenerCls.classLoader, arrayOf(listenerCls)
+            ) { _, method, args ->
+                when (method.name) {
+                    "onPixelCopyFinished" -> {
+                        // PixelCopy.SUCCESS == 0（复制成功）
+                        ok = args != null && args[0] as Int == 0
+                        latch.countDown()
+                        null
+                    }
+                    "toString" -> "PixelCopyListener"
+                    "hashCode" -> System.identityHashCode(this)
+                    "equals" -> args != null && args[0] === this
+                    else -> null
+                }
+            }
+            request.invoke(null, window, rect, bmp, proxy)
+            latch.await(900, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (ok) bmp else { bmp.recycle(); null }
+        } catch (e: Throwable) {
+            DebugLog.warn("截图", "PixelCopy 反射调用失败（降级摘要卡片图）：${e.message}")
             null
-        } finally {
-            try {
-                webView.setLayerType(oldLayer, null)
-                webView.visibility = oldVis
-            } catch (e: Exception) {}
         }
     }
 
