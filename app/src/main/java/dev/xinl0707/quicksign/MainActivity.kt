@@ -2755,14 +2755,21 @@ class MainActivity : Activity() {
         val gaps = mutableListOf<String>()
         var pp = 0
         var cur = StringBuilder()
+        var pendingGap = StringBuilder()
+        var havePendingGap = false
         while (pp < s.length) {
             if (isDigitChar(s[pp])) {
+                // 遇到新数字段时定档上一段尾的间隔；文本开头的非数字前缀（如"听到吗？"）不属于段间，丢弃
+                if (havePendingGap) {
+                    if (segs.isNotEmpty()) gaps.add(pendingGap.toString())
+                    havePendingGap = false
+                }
                 cur.append(s[pp]); pp++
             } else {
                 if (cur.isNotEmpty()) { segs.add(cur.toString()); cur = StringBuilder() }
-                val gap = StringBuilder()
-                while (pp < s.length && !isDigitChar(s[pp])) { gap.append(s[pp]); pp++ }
-                gaps.add(gap.toString())
+                pendingGap = StringBuilder()
+                while (pp < s.length && !isDigitChar(s[pp])) { pendingGap.append(s[pp]); pp++ }
+                havePendingGap = true
             }
         }
         if (cur.isNotEmpty()) segs.add(cur.toString())
@@ -2778,7 +2785,7 @@ class MainActivity : Activity() {
             if (isPunctGap(gap)) curM += segToDigits(segs[i]) else { merged.add(curM); curM = segToDigits(segs[i]) }
         }
         merged.add(curM)
-        appendLog("extract 数字段: ${segs.joinToString(" | ")} → 可拼后: ${merged.joinToString(" | ")}")
+        appendLog("extract 数字段: ${segs.joinToString(" | ") { s -> "\"$s\"" }} 间隔: ${gaps.joinToString(" | ") { g -> "\"$g\"" }} → 可拼后: ${merged.joinToString(" | ")}")
         // 4. 判定：优先循环重复长段（强证据）；其次唯一恰好4位段；多个4位段或无法确认 → 交 LLM
         var cycleHit: String? = null
         var fourCandidates = mutableListOf<String>()
