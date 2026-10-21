@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上课啦签到 App 技术分析报告 v3.0.8</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #181b24;
+    --surface2: #1f2330;
+    --border: #2a2f3d;
+    --text: #e4e7ef;
+    --text2: #9aa3b8;
+    --accent: #4f8cff;
+    --accent2: #38d9a9;
+    --warn: #ffb020;
+    --danger: #ff5c7a;
+    --code-bg: #14171f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 40px 20px;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1 {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #4f8cff, #38d9a9);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--text2); font-size: 15px; margin-bottom: 40px; }
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 48px 0 16px;
+    padding-left: 14px;
+    border-left: 4px solid var(--accent);
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 28px 0 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 12px; color: var(--text); }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 16px 0;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+  }
+  .stat .num { font-size: 28px; font-weight: 800; color: var(--accent); }
+  .stat .label { font-size: 13px; color: var(--text2); margin-top: 2px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  th { background: var(--surface2); color: var(--accent2); font-weight: 600; }
+  tr:hover { background: var(--surface); }
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-size: 13px;
+    color: var(--accent2);
+    font-family: "Cascadia Code", "Fira Code", monospace;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 12px 0;
+  }
+  pre code { background: none; padding: 0; color: var(--text); }
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .tag-blue { background: rgba(79,140,255,0.15); color: var(--accent); }
+  .tag-green { background: rgba(56,217,169,0.15); color: var(--accent2); }
+  .tag-warn { background: rgba(255,176,32,0.15); color: var(--warn); }
+  .tag-red { background: rgba(255,92,122,0.15); color: var(--danger); }
+  .flow-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    margin: 16px 0;
+    text-align: center;
+  }
+  .flow-step {
+    display: inline-block;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    font-size: 13px;
+    margin: 4px;
+    vertical-align: middle;
+  }
+  .flow-arrow { color: var(--accent); font-size: 18px; margin: 0 4px; }
+  ul, ol { margin: 10px 0 10px 24px; }
+  li { margin-bottom: 6px; }
+  .highlight { background: rgba(79,140,255,0.08); border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .warning { background: rgba(255,176,32,0.08); border-left: 3px solid var(--warn); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .danger-box { background: rgba(255,92,122,0.08); border-left: 3px solid var(--danger); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text2); font-size: 13px; text-align: center; }
+  svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>上课啦签到 App 技术分析报告</h1>
+<div class="subtitle">HDU skl quicksign · 版本 v3.0.8 (versionCode 94) · 生成于 2026-10-21 · 分支 ui-redesign</div>
+
+<!-- ===== 1. 项目概览 ===== -->
+<h2>1. 项目概览</h2>
+
+<p>「上课啦」是一款面向杭州电子科技大学学生的课堂签到自动化安卓应用。核心目标：在老师公布 4 位签到码后的 15 秒黄金窗口内，通过<strong>语音识别自动提取签到码</strong>并注入 WebView 完成签到，把"听码 → 掏手机 → 输码 → 点签到"的手动操作压缩到接近零。</p>
+
+<div class="grid2">
+  <div class="stat"><div class="num">8</div><div class="label">Kotlin 源文件（零第三方依赖）</div></div>
+  <div class="stat"><div class="num">~270KB</div><div class="label">源码总量（MainActivity 占 161KB）</div></div>
+  <div class="stat"><div class="num">94</div><div class="label">累计 versionCode（v1.0 → v3.0.8）</div></div>
+  <div class="stat"><div class="num">5</div><div class="label">套主题风格 + 明暗自适应</div></div>
+</div>
+
+<div class="highlight">
+  <strong>技术定位：</strong>纯 Kotlin 原生 Android 应用，compileSdk 37 / minSdk 26 / targetSdk 37，Java 17 字节码。零第三方库——WebView、AudioRecord、Keystore、HttpURLConnection 全部使用系统能力，APK 体积仅约 710KB。
+</div>
+
+<!-- ===== 2. 技术栈 ===== -->
+<h2>2. 技术栈与工程信息</h2>
+
+<table>
+  <tr><th>维度</th><th>选型</th><th>说明</th></tr>
+  <tr><td>语言</td><td>Kotlin</td><td>全程 Kotlin，无 Java 混编</td></tr>
+  <tr><td>UI 框架</td><td>原生 View + 代码布局</td><td>无 XML 布局文件，全部程序化构建 UI</td></tr>
+  <tr><td>Web 引擎</td><td>Android System WebView</td><td>加载 skl.hdu.edu.cn，JS 注入交互</td></tr>
+  <tr><td>语音识别</td><td>小米 MIMO 云端 ASR</td><td>mimo-v2.5-asr（转写）+ mimo-v2.6-flash（综合判断）</td></tr>
+  <tr><td>音频采集</td><td>AudioRecord</td><td>16kHz 单声道 16bit PCM，10 秒环形缓冲</td></tr>
+  <tr><td>网络</td><td>HttpURLConnection</td><td>直连 MIMO OpenAI 兼容接口，无 OkHttp/Retrofit</td></tr>
+  <tr><td>加密存储</td><td>Android Keystore</td><td>学号密码 AES 加密后存 SharedPreferences</td></tr>
+  <tr><td>构建</td><td>Gradle + AGP</td><td>Kotlin DSL (build.gradle.kts)，release 用 debug 签名</td></tr>
+  <tr><td>版本管理</td><td>Git + GitHub</td><td>github.com/xinl0707/HDU-skl-quicksign，每版打 tag</td></tr>
+</table>
+
+<h3>权限清单</h3>
+<div class="card">
+  <code>INTERNET</code> · <code>RECORD_AUDIO</code> · <code>ACCESS_FINE_LOCATION</code> · <code>ACCESS_COARSE_LOCATION</code> · <code>VIBRATE</code>
+  <p style="margin-top:8px;color:var(--text2);font-size:13px;">无存储权限（调试导出用系统 Download 目录 MediaStore）、无后台服务（singleTask 单 Activity 架构）。</p>
+</div>
+
+<!-- ===== 3. 系统架构 ===== -->
+<h2>3. 系统架构</h2>
+
+<div class="flow-box">
+  <svg viewBox="0 0 880 340" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;">
+    <!-- 定义 -->
+    <defs>
+      <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#4f8cff"/><stop offset="100%" stop-color="#38d9a9"/>
+      </linearGradient>
+    </defs>
+    <!-- MainActivity 中心 -->
+    <rect x="320" y="130" width="240" height="80" rx="14" fill="url(#g1)" opacity="0.9"/>
+    <text x="440" y="165" text-anchor="middle" fill="#fff" font-size="16" font-weight="700">MainActivity</text>
+    <text x="440" y="188" text-anchor="middle" fill="#e0f0ff" font-size="11">主界面 · 状态机 · 结果判定</text>
+
+    <!-- 周围模块 -->
+    <rect x="40" y="30" width="180" height="60" rx="10" fill="#1f2330" stroke="#2a2f3d"/>
+    <text x="130" y="55" text-anchor="middle" fill="#38d9a9" font-size="13" font-weight="600">MiMoSpeechEngine</text>
+    <text x="130" y="75" text-anchor="middle" fill="#9aa3b8" font-size="10">录音 · 切片 · ASR · LLM</text>
+
+    <rect x="660" y="30" width="180" height="60" rx="10" fill="#1f2330" stroke="#2a2f3d"/>
+    <text x="750" y="55" text-anchor="middle" fill="#38d9a9" font-size="13" font-weight="600">SignInjector</text>
+    <text x="750" y="75" text-anchor="middle" fill="#9aa3b8" font-size="10">JS 注入 · 盲输 · 状态探测</text>
+
+    <rect x="40" y="250" width="180" height="60" rx="10" fill="#1f2330" stroke="#2a2f3d"/>
+    <text x="130" y="275" text-anchor="middle" fill="#38d9a9" font-size="13" font-weight="600">CredentialStore</text>
+    <text x="130" y="295" text-anchor="middle" fill="#9aa3b8" font-size="10">Keystore 加密 · 偏好存储</text>
+
+    <rect x="660" y="250" width="180" height="60" rx="10" fill="#1f2330" stroke="#2a2f3d"/>
+    <text x="750" y="275" text-anchor="middle" fill="#38d9a9" font-size="13" font-weight="600">SettingsActivity</text>
+    <text x="750" y="295" text-anchor="middle" fill="#9aa3b8" font-size="10">设置 · 课表 · 调试日志</text>
+
+    <rect x="280" y="280" width="140" height="50" rx="10" fill="#1f2330" stroke="#2a2f3d"/>
+    <text x="350" y="302" text-anchor="middle" fill="#38d9a9" font-size="12" font-weight="600">ScheduleParser</text>
+    <text x="350" y="320" text-anchor="middle" fill="#9aa3b8" font-size="10">ICS 课表解析</text>
+
+    <rect x="460" y="280" width="140" height="50" rx="10" fill="#1f2330" stroke="#2a2f3d"/>
+    <text x="530" y="302" text-anchor="middle" fill="#38d9a9" font-size="12" font-weight="600">ThemePalette</text>
+    <text x="530" y="320" text-anchor="middle" fill="#9aa3b8" font-size="10">5 套主题色板</text>
+
+    <!-- 连线 -->
+    <line x1="220" y1="60" x2="340" y2="140" stroke="#4f8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="660" y1="60" x2="540" y2="140" stroke="#4f8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="220" y1="280" x2="340" y2="200" stroke="#4f8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="660" y1="280" x2="540" y2="200" stroke="#4f8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="350" y1="280" x2="400" y2="215" stroke="#4f8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="530" y1="280" x2="480" y2="215" stroke="#4f8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+  </svg>
+</div>
+
+<p>架构为<strong>单 Activity + 多职责类</strong>模式：MainActivity 是核心调度器（约 3700 行），持有 WebView、签到面板、键盘、状态机；其余 7 个类为独立功能模块，通过回调/直接调用与 MainActivity 交互。无 Service、无 BroadcastReceiver、无 Fragment。</p>
+
+<!-- ===== 4. 核心模块 ===== -->
+<h2>4. 核心模块详解</h2>
+
+<h3>4.1 MainActivity.kt（161KB · ~3700 行）</h3>
+<p>整个应用的大脑，承担以下职责：</p>
+<ul>
+  <li><strong>WebView 管理</strong>：加载签到页、登录态探测（probe login）、页面状态轮询（pollTick 每秒）、URL 变化监听</li>
+  <li><strong>签到面板 UI</strong>：四位码槽、大数字键盘、时钟/经纬度/课程信息区、成功覆盖页、无效弹窗、首次引导流程</li>
+  <li><strong>语音调度</strong>：maybeAutoListen 哨兵（8 项条件检查）、onResult 切片处理、extractCode 本地提取、maybeLlmExtract LLM 兜底、submitCode 提交</li>
+  <li><strong>结果判定状态机</strong>：filling → pollFillResult（120ms 轮询注入结果）→ pollTick（每秒查 URL 跳转）→ 成功/无效分支</li>
+  <li><strong>登录链路</strong>：CAS 跳转探测、自动填表、SSO 循环防护、登录成功后切回面板</li>
+  <li><strong>生命周期</strong>：onResume/onPause 控制监听启停，后台立即停止麦克风</li>
+</ul>
+
+<h3>4.2 MiMoSpeechEngine.kt（19KB）</h3>
+<p>小米 MIMO 云端语音识别引擎，采用<strong>转写 + 综合判断两步架构</strong>：</p>
+<ul>
+  <li><strong>录音层</strong>：AudioRecord 持续采集 16kHz PCM，写入 10 秒环形缓冲区（ByteArray 320KB），全程不中断</li>
+  <li><strong>切片层</strong>：首片等 6 秒（FIRST_SLICE_MS），之后每 3 秒（SLICE_MS）截取最近 10 秒（WINDOW_MS），相邻片重叠 7 秒降低断句概率</li>
+  <li><strong>上传层</strong>：2 线程池并行上传 HttpURLConnection，含静音片也上传（避免轻声漏识别），Base64 编码 PCM</li>
+  <li><strong>转写模型</strong>：mimo-v2.5-asr（中文语音转文字）</li>
+  <li><strong>综合模型</strong>：mimo-v2.6-flash（多模态对话，从累积转写中提取 4 位签到码）</li>
+  <li><strong>防残留</strong>：stopped 标志位，停止后所有回调作废，杜绝上一轮识别结果混入新一轮</li>
+</ul>
+
+<h3>4.3 SignInjector.kt（24KB）</h3>
+<p>注入 WebView 的 JavaScript 引擎，针对 skl.hdu.edu.cn 前端结构定制：</p>
+<ul>
+  <li><strong>页面探测</strong>（JS_DETECT_STATE）：检测密码框、验证码、签到按钮、定位提示、URL hash，返回 JSON</li>
+  <li><strong>自动登录</strong>：精确选择器填学号密码，触发 input/change/keyup/ionInput 完整事件序列确保 Angular model 同步，等 800ms 后点登录</li>
+  <li><strong>四位码盲输</strong>（jsFillCode）：Vant 数字键盘只响应 touch 事件，用合成 TouchEvent 逐键模拟点击（180ms 间隔），通过统计已填圆点数量校验（不能读文本——密码框是圆点），最多清残留重试 2 轮</li>
+  <li><strong>关键修复</strong>：v1.x 曾因"读取文本校验"导致 2588 变成 2222（重复按同一键），改为圆点计数后解决</li>
+</ul>
+
+<h3>4.4 CredentialStore.kt（7KB）</h3>
+<p>基于 Android Keystore 的加密存储：</p>
+<ul>
+  <li>学号密码用 AES/GCM 加密，密钥存 Keystore（硬件级安全），密文存 SharedPreferences</li>
+  <li>同时管理所有偏好设置：API Key、模型选择、主题、自动监听开关、课表数据、免责声明同意记录</li>
+</ul>
+
+<h3>4.5 SettingsActivity.kt（38KB）</h3>
+<p>独立设置页，分块布局：账号密码、语音引擎（MIMO API Key / 模型选择 / 自动监听）、课表导入（ICS）、主题选择（5 套色板卡片）、调试日志（可滚动 + 导出）、弹窗测试按钮。</p>
+
+<h3>4.6 ScheduleParser.kt（2.5KB）</h3>
+<p>ICS 课表文件解析器，提取 VEVENT 中的课程名、时间、地点，一次导入永久保存。</p>
+
+<h3>4.7 ThemePalette.kt（8KB）</h3>
+<p>5 套主题色板定义：墨青（默认）、朱砂·国潮、原木·暖阳、石墨·极简、极光·青绿。每套包含强调色、浅底、键盘文字色、错误色、成功色、分隔线色。运行时动态切换，明暗模式自适应。</p>
+
+<h3>4.8 DebugLog.kt（1.4KB）</h3>
+<p>轻量调试日志收集器，appendLog 追加带时间戳的日志行，支持导出为 txt 到 Download 目录。</p>
+
+<!-- ===== 5. 语音识别签到全链路 ===== -->
+<h2>5. 语音识别签到全链路（核心）</h2>
+
+<p>这是本 App 最复杂、迭代最多的子系统（v3.0.3 → v3.0.8 共 6 个版本专门优化）。完整链路如下：</p>
+
+<div class="flow-box">
+  <div class="flow-step" style="border-color:#4f8cff;">A. 哨兵检查<br><span style="color:#9aa3b8;font-size:11px;">8 项条件全满足才启动</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#4f8cff;">B. 录音切片<br><span style="color:#9aa3b8;font-size:11px;">10s 环形缓冲 · 首片6s · 之后3s/片</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#4f8cff;">C. ASR 转写<br><span style="color:#9aa3b8;font-size:11px;">mimo-v2.5-asr 中文转文字</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#38d9a9;">D. 本地提取<br><span style="color:#9aa3b8;font-size:11px;">extractCode 多段拼接+循环检测</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#ffb020;">E. LLM 兜底<br><span style="color:#9aa3b8;font-size:11px;">本地没把握时交 flash 综合判断</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#ff5c7a;">F. 提交判定<br><span style="color:#9aa3b8;font-size:11px;">盲输注入 · 5s 跳转检测</span></div>
+</div>
+
+<h3>5.1 启动哨兵（maybeAutoListen）</h3>
+<p>以下 8 项必须<strong>同时满足</strong>才启动麦克风监听，缺一则状态栏显示对应原因：</p>
+<ol>
+  <li>设置中自动语音监听开关开启</li>
+  <li>已填写 MIMO API Key</li>
+  <li>已授予麦克风权限</li>
+  <li>签到面板在前台显示（signPanelShown = true）</li>
+  <li>App 不在后台（hasWindowFocus）</li>
+  <li>当前不在提交等待状态（!filling）</li>
+  <li>未显示无效弹窗</li>
+  <li>签到就绪（signReady = true）</li>
+</ol>
+
+<h3>5.2 本地快速路径 extractCode（v3.0.8 现行规则）</h3>
+<p>每片 ASR 转写到达后，优先走本地提取（零延迟），步骤：</p>
+<ol>
+  <li><strong>剔除语气词</strong>：啊/哦/嗯/呢/嘛/的/了/个/是/呀/啦/哈/喂/诶/好</li>
+  <li><strong>英文数字替换</strong>：zero~nine → 0~9（正则边界匹配）</li>
+  <li><strong>提取所有数字段</strong>：标准数字字 = 0-9 + 零洞幺一两三四五六七八九；"十百千"和同音字不算</li>
+  <li><strong>段间拼接判定</strong>（v3.0.6 新增，v3.0.7 修复）：两段数字之间<strong>只隔标点/空白</strong>（逗号顿号句号等）则拼接；中间夹任何实义文字（"第一次""签到码是"）则不拼。文本开头的非数字前缀直接丢弃</li>
+  <li><strong>合并段判定</strong>：
+    <ul>
+      <li>合并段 >4 位且<strong>循环前缀重复</strong>（前4位+剩余位构成循环，如 1234123 → 1234）→ 取前 4 位，本地命中</li>
+      <li>合并段恰好 4 位且只有一个 → 本地命中</li>
+      <li>多个 4 位段无法确定 → 交 LLM</li>
+      <li>其余 → 交 LLM</li>
+    </ul>
+  </li>
+  <li><strong>尾部防误杀</strong>（findTailOfLongerSegment）：命中的 4 位若等于历史转写里更长段的末尾（如"一四七八"是"八一四七八"的尾部），说明是第二遍报码被截断 → 从历史长段取前 4 位</li>
+</ol>
+
+<div class="highlight">
+  <strong>典型场景走查（v3.0.7 实测通过）：</strong><br>
+  转写 "签到码是一二三，四一二三。" → 剔除语气词 → 数字段 [一二三, 四一二三]，间隔 "，"（标点可拼）→ 合并为 <code>1234123</code> → 循环检测：前4=1234，剩余 123 是 1234 的前缀 → <strong>本地命中 1234</strong>，跳过 LLM，零延迟提交。
+</div>
+
+<h3>5.3 LLM 兜底（maybeLlmExtract）</h3>
+<p>本地没把握时，把 heardPool（最近 10 条转写，含时间戳）交给 mimo-v2.6-flash，提示词规则：</p>
+<ul>
+  <li>只提取老师明确报出的签到码，闲聊/口头禅中的数字忽略</li>
+  <li>重复报码取开头完整的一组（8517851 → 8517，后段 851 是第二遍被截断的前缀）</li>
+  <li>2-3 位不完整片段输出"无"，不猜测</li>
+  <li>谐音字严禁猜测（八≠百/吧，四≠是/十）</li>
+  <li>3 位 + 1 位跨片可拼接（三八三 + 八 → 三八三八）</li>
+  <li>宁可输出"无"也不猜</li>
+</ul>
+<p>输出必须恰好 4 位纯数字才接受，否则丢弃继续监听。llmExtractBusy 防重入，上一次未返回时不重复请求。</p>
+
+<h3>5.4 提交与结果判定</h3>
+<ol>
+  <li><code>submitCode</code>：filling=true → 立即停监听 → 大数字浮层（v3.0.8 已删弹跳动画）→ jsFillCode 盲输</li>
+  <li><code>pollFillResult</code>：每 120ms 查注入结果，上限 60 次（约 7 秒）</li>
+  <li><code>pollTick</code>（每秒）：URL 跳到 <code>#/sign/in/detail</code> → 成功覆盖页（彩带）；5 秒未跳 → 无效弹窗（小字"或网络超时"）；再缓冲 3 秒后停止检测</li>
+</ol>
+
+<!-- ===== 6. 登录链路 ===== -->
+<h2>6. WebView 登录与注入链路</h2>
+
+<div class="flow-box">
+  <div class="flow-step">启动加载签到页</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step">probe login 探测登录态<br><span style="color:#9aa3b8;font-size:11px;">HTTP 携带 Cookie + sessionId</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#ffb020;">未登录 → CAS 跳转<br><span style="color:#9aa3b8;font-size:11px;">cas.hdu.edu.cn</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step">自动填学号密码<br><span style="color:#9aa3b8;font-size:11px;">Angular 事件序列同步</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#ff5c7a;">Toast 提示手动点登录<br><span style="color:#9aa3b8;font-size:11px;">不自动提交（按钮不稳定）</span></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step" style="border-color:#38d9a9;">登录成功回跳<br><span style="color:#9aa3b8;font-size:11px;">自动切回键盘面板</span></div>
+</div>
+
+<div class="warning">
+  <strong>已知限制：</strong>登录按钮不自动点击（v3.x 决策），因为杭电 SSO 登录按钮点击不稳定，改为自动填表 + Toast 提示用户手动点。用户手动点击后页面跳转签到页，但 App 不会自动切回覆盖界面——需用户手动点"返回签到"。
+</div>
+
+<!-- ===== 7. UI/UX ===== -->
+<h2>7. UI/UX 设计体系</h2>
+
+<h3>7.1 视觉系统（v3.0.0 大改定版）</h3>
+<ul>
+  <li><strong>主界面</strong>：标题栏 22sp + 主题色分隔线；信息区（签到就绪/时钟/经纬度/课程）字阶 17-24sp；四位码槽独立数字位（v3.0.8 删弹跳动画，静态显示）；键盘键高 62dp、圆角 22、数字 28sp</li>
+  <li><strong>成功覆盖页</strong>：反色印章徽章（绿环白心）+ 30sp 大标题 + 圆角 20 考勤卡（旷课学时/课程名）</li>
+  <li><strong>无效弹窗</strong>：警示图标 + "签到码无效" + 小字"或网络超时" + 重新输入按钮</li>
+  <li><strong>设置页</strong>：分块圆角 20 + 标题加粗 + 输入框圆角 14 + 主题选择器改色板卡片（强调色圆点 + 选中整卡变色 + 投影）</li>
+  <li><strong>开屏</strong>：品牌色渐变 + 图标弹入 + 四位码槽逐个点亮（v2.0.x 精简后保留）</li>
+</ul>
+
+<h3>7.2 首次引导流程</h3>
+<ol>
+  <li><strong>免责声明</strong>：全屏遮罩卡片弹窗，须滑动到底才能点同意（未滑到底按钮灰色 + Toast 提示），不同意自动退出 App；同意记录存本地，只弹一次</li>
+  <li><strong>权限引导</strong>：麦克风 + 定位权限，授予失败引导再次点击</li>
+  <li><strong>设置页</strong>：首次进入隐藏左上角返回（禁用系统返回手势），只保留右上角保存，防止用户乱点；WebView 延迟至保存后才加载（避免后台加载导致时机问题）</li>
+</ol>
+
+<h3>7.3 震动反馈</h3>
+<p>仅三个场景触发：输入数字时（清脆短震）、提示错误时（快速两下）、签到成功时。v3.x 收敛了震动频率，避免过度反馈。</p>
+
+<!-- ===== 8. 版本迭代 ===== -->
+<h2>8. 版本迭代脉络</h2>
+
+<table>
+  <tr><th>阶段</th><th>版本</th><th>核心里程碑</th></tr>
+  <tr><td rowspan="3">基础建设期</td><td>v1.0–v1.9</td><td>登录自动重登、MIMO 语音接入、滑块处理、UA 切换、盲输校验</td></tr>
+  <tr><td>v1.10–v1.11</td><td>原生签到面板、识别日志、界面重构</td></tr>
+  <tr><td>v1.12–v1.14</td><td>语音切片优化、ASR+flash 综合判断、5 主题、ICS 课表</td></tr>
+  <tr><td rowspan="3">稳定收敛期</td><td>v1.15–v1.16</td><td>登录探测携带 Cookie、SSO 循环防护、登录链路根治、冷启动提速</td></tr>
+  <tr><td>v1.17.x</td><td>首次引导稳定、语音切片 10 秒窗口 bug 修复、后台停止监听、经纬度一位小数、死代码清理</td></tr>
+  <tr><td>v2.0.x</td><td>UI 全面重建（5 主题 token 体系）、花哨开屏动画迭代精简</td></tr>
+  <tr><td rowspan="6">语音提取深水区</td><td>v3.0.0</td><td>UI 大改定版：四位码槽重构、印章回执、色板卡片、App 图标渐变</td></tr>
+  <tr><td>v3.0.2</td><td>调试日志全面细化、设置页日志可滚动</td></tr>
+  <tr><td>v3.0.3</td><td>本地提取重构：必须连续恰好 4 位才截取，解决序数数字混入</td></tr>
+  <tr><td>v3.0.4</td><td>重复报码尾部检测 + LLM 提示词详细改写（尾部检测有 bug 未生效）</td></tr>
+  <tr><td>v3.0.5</td><td>修复尾部检测 bug + 长串循环重复本地检测（81478→8147），提速 6-17 秒</td></tr>
+  <tr><td>v3.0.6–3.0.8</td><td>标点间隔拼接还原 ASR 断句、修复前缀错位 bug、删除数字弹跳动画</td></tr>
+</table>
+
+<!-- ===== 9. 已知问题 ===== -->
+<h2>9. 已知问题与技术债</h2>
+
+<div class="danger-box">
+  <strong>P0 · 提交后 URL 不跳转：</strong>多次课堂实测中，正确签到码（如 8147、1234）提交后页面输入框显示正确数字，但 URL 不跳 <code>#/sign/in/detail</code>，5 秒后弹无效弹窗。页面抓取未显示"签到码不存在"（说明码是对的），但也未跳转。<code>jsFillCode</code> 只逐键填码、从不点击"签到"按钮——可能依赖页面自动提交，但自动提交未触发。此问题用户已确认暂缓修复。
+</div>
+
+<div class="warning">
+  <strong>P1 · LLM 响应延迟不稳定：</strong>mimo-v2.6-flash 综合判断响应时间 3-17 秒波动，本地快速路径已覆盖大部分场景（4 位/循环重复/拼接），但多段歧义场景仍需等 LLM。
+</div>
+
+<div class="warning">
+  <strong>P1 · MainActivity 单文件过大：</strong>161KB / ~3700 行，承担 UI + 状态机 + 语音调度 + 登录 + 生命周期，可维护性下降。建议拆分为 SignPanelController、LoginController、ResultWatcher 等。
+</div>
+
+<div class="card">
+  <strong>P2 · 其他技术债：</strong>
+  <ul style="margin-top:8px;">
+    <li>release 构建用 debug 签名（自用可接受，分发需正式签名）</li>
+    <li>无签到历史持久化（签完即忘）</li>
+    <li>无单元测试（提取逻辑 extractCode 适合写纯函数测试）</li>
+    <li>ASR 同音字识别依赖模型质量，"四/是""八/吧"在嘈杂教室仍可能误转</li>
+    <li>课表为手动 ICS 导入，未对接杭电教务系统自动获取</li>
+  </ul>
+</div>
+
+<!-- ===== 10. 功能建议 ===== -->
+<h2>10. 功能建议与路线图</h2>
+
+<h3>高优先级（投入小、每天用得上）</h3>
+<table>
+  <tr><th>功能</th><th>价值</th><th>实现难度</th></tr>
+  <tr><td>签到历史记录</td><td>签完可查，解决"上周那节课签上没"的问题</td><td>低（Room/SharedPreferences 存 JSON）</td></tr>
+  <tr><td>签到成功自动截图</td><td>防止"系统说没签上"的扯皮，截图=铁证</td><td>低（WebView onPageFinished 后 draw 到 Bitmap）</td></tr>
+  <tr><td>识别到码后二次确认弹窗</td><td>拦住误提交，1.5 秒无操作自动提交不打断节奏</td><td>中（需平衡延迟与准确率）</td></tr>
+</table>
+
+<h3>中优先级（体验提升）</h3>
+<table>
+  <tr><th>功能</th><th>价值</th><th>实现难度</th></tr>
+  <tr><td>课表从教务自动导入</td><td>不用手动下载 ICS</td><td>中（需爬杭电教务，可能有验证码）</td></tr>
+  <tr><td>桌面小组件</td><td>一键签到 + 下节课提醒</td><td>中（AppWidget）</td></tr>
+  <tr><td>弱网缓存重提</td><td>教室网差时缓存签到码，恢复后自动提交</td><td>中</td></tr>
+  <tr><td>extractCode 单元测试</td><td>提取逻辑迭代时防回归，覆盖所有 debug 场景</td><td>低（纯函数，JUnit 即可）</td></tr>
+</table>
+
+<h3>低优先级（锦上添花）</h3>
+<ul>
+  <li>数据导出备份（设置 + 历史 → JSON，换手机不丢）</li>
+  <li>签到成功率统计（每周/每月看板）</li>
+  <li>蓝牙耳机麦克风优先（教室后排听不清时）</li>
+  <li>签到码语音播报确认（"识别到 1234"）</li>
+</ul>
+
+<!-- ===== 11. 代码质量评估 ===== -->
+<h2>11. 代码质量评估</h2>
+
+<div class="grid2">
+  <div class="stat"><div class="num" style="color:var(--accent2);">A</div><div class="label">架构清晰度：模块职责分明，零依赖</div></div>
+  <div class="stat"><div class="num" style="color:var(--accent2);">A</div><div class="label">调试可观测性：全链路日志 + 页面抓取</div></div>
+  <div class="stat"><div class="num" style="color:var(--warn);">B</div><div class="label">可维护性：MainActivity 过大，需拆分</div></div>
+  <div class="stat"><div class="num" style="color:var(--warn);">B</div><div class="label">测试覆盖：无自动化测试，靠课堂实测</div></div>
+  <div class="stat"><div class="num" style="color:var(--accent2);">A</div><div class="label">迭代效率：v3.0.3→3.0.8 六版快速收敛语音提取</div></div>
+  <div class="stat"><div class="num" style="color:var(--accent2);">A</div><div class="label">工程规范：每版 tag + README 变更记录 + APK 归档</div></div>
+</div>
+
+<div class="highlight">
+  <strong>总结：</strong>这是一个由真实课堂需求驱动、快速迭代的个人工具项目。最大的技术亮点是<strong>语音识别签到码的本地+LLM 双层提取架构</strong>——通过连续 4 位门槛、循环重复检测、标点间隔拼接、尾部防误杀四层本地规则，把绝大多数场景的延迟从 LLM 的 3-17 秒压缩到零延迟，同时用 LLM 兜底歧义场景。最大的待解决问题是<strong>提交后页面不跳转</strong>（P0）和 <strong>MainActivity 单文件膨胀</strong>（可维护性）。
+</div>
+
+<div class="footer">
+  上课啦签到 App 技术分析报告 · v3.0.8 · 2026-10-21 · 基于 ui-redesign 分支源码分析<br>
+  项目地址：github.com/xinl0707/HDU-skl-quicksign
+</div>
+
+</div>
+</body>
+</html>

@@ -217,6 +217,7 @@ class MainActivity : Activity() {
     private var resultWatchActive = false   // 输码后结果监听进行中
     private var resultWatchStartAt = 0L     // 结果监听启动时间（5 秒超时判定签到码无效）
     private var resultWaiting = false       // 输码后结果判定中：键盘位显示大大大转圈过渡，键盘/横线隐藏
+    private var successHandling = false     // 成功处理进行中（防 resultWatch 与 handleState 双路径重入）
     // 首次启动引导（免责声明 + 权限 + 进设置），同意一次后不再弹出
     private var guideOverlay: FrameLayout? = null
     private var disclaimerCard: LinearLayout? = null
@@ -2446,24 +2447,28 @@ class MainActivity : Activity() {
 
     /** 签到成功：从网页正文提取课程名与考勤统计 → 弹出签到完成覆盖页（带彩带） */
     private fun onSignSucceeded() {
+        if (successHandling) return   // 防重入：resultWatch 分支与 handleState signed 分支同一轮都可能触发
+        successHandling = true
         appendLog("sign succeeded: #/sign/in/detail")
         invalidShown = false                       // 若无效弹窗显示中（缓冲期内成功）→ 先关掉
         invalidOverlay?.visibility = View.GONE
         resultWatchActive = false
         hideResultWaiting()                        // 收掉结果等待转圈
         vibrate(60)                                // 签到成功震动反馈（清脆单震）
-        // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 3 次）
+        // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 8 次 × 600ms ≈ 4.8 秒）。
+        // 关键：必须等数据真正加载完成再弹——跳 detail 瞬间正文是「课堂签到统计」占位 + 「正在验证中...」
+        // + 课程总学时 0，此时抓取会得到全 0 的错误数据（实测 600ms 后课程名/总学时/考勤数才返回）。
         fun extract(attempt: Int) {
             evalJs("(function(){try{return document.body.innerText||''}catch(e){return ''}})()") { text ->
                 val t = text ?: ""
-                if (t.contains("签到完成") || attempt >= 2) {
+                val dataLoaded = t.contains("签到完成") && !t.contains("正在验证中") &&
+                    Regex("旷课学时\\s*\\d+\\s*/\\s*课程总学时\\s*[1-9]\\d*").containsMatchIn(t)
+                if (dataLoaded || attempt >= 8) {
                     parseSignResult(t)
                     showSignResultOverlay()
-                } else if (attempt < 3) {
-                    handler.postDelayed({ extract(attempt + 1) }, 600)
+                    successHandling = false
                 } else {
-                    parseSignResult(t)
-                    showSignResultOverlay()
+                    handler.postDelayed({ extract(attempt + 1) }, 600)
                 }
             }
         }
@@ -2546,7 +2551,7 @@ class MainActivity : Activity() {
         ov.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
     }
 
-    /** 关闭覆盖页 → 回签到页（重新加载 #/sign/in 恢复输入框），可继续签下一门 */
+    /** 关闭覆盖页 → 回签到页（整页导航 #/sign/in 恢复输入框），可继续签下一门 */
     private fun dismissSignResultOverlay() {
         if (!signResultShown) return
         signResultShown = false
@@ -2555,9 +2560,13 @@ class MainActivity : Activity() {
         lastSubmitAt = 0L     // 结果窗口失效：后续停在 detail 页不再触发覆盖页
         prevSigned = false    // 允许导航回签到页
         statusText.text = "签到就绪"
+        // 无条件整页导航回签到页（不依赖 URL 判断——前端 SPA 可能 hash 已变但视图未切，卡在 detail 导致面板一直加载）。
+        // 正在 SSO 登录页则打断登录流程，不动。
         val u = webView.url ?: ""
-        if (u.contains("#/sign/in/detail") || !u.contains("#/sign/")) {
-            webView.loadUrl(SignInjector.HOME_URL)   // 整页导航回签到页，恢复输入框
+        val host = try { Uri.parse(u).host?.lowercase() ?: "" } catch (e: Exception) { "" }
+        val isSso = host.contains("sso") || host.contains("cas")
+        if (!isSso) {
+            webView.loadUrl(SignInjector.HOME_URL)
         }
     }
 
