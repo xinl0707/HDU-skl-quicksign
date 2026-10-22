@@ -39,7 +39,6 @@ class SettingsActivity : Activity() {
     private lateinit var mimoKeyInput: EditText
     private lateinit var mimoUrlInput: EditText
     private lateinit var mimoAsrInput: EditText
-    private lateinit var mimoModelInput: EditText
     private lateinit var scheduleStatusText: TextView
     private lateinit var logText: TextView
     private lateinit var rootFrame: FrameLayout
@@ -640,14 +639,6 @@ class SettingsActivity : Activity() {
             content.addView(mimoAsrInput, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(4) })
-            content.addView(label("LLM 判断模型", 13f, SUB), LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) })
-            mimoModelInput = edit("LLM 判断模型").apply { setText(credStore.mimoModel()); textSize = 13f }
-            autoSave(mimoModelInput)
-            content.addView(mimoModelInput, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(4) })
         }
         voiceBlock.addView(mimoCollapse, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -974,7 +965,6 @@ class SettingsActivity : Activity() {
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
-        credStore.setMimoModel(mimoModelInput.text.toString().trim())
         credStore.setAutoListen(credStore.autoListen())
         credStore.setShowSpeechInfo(credStore.showSpeechInfo())
     }
@@ -1005,10 +995,9 @@ class SettingsActivity : Activity() {
         credStore.setMimoApiKey(mimoKeyInput.text.toString().trim())
         credStore.setMimoBaseUrl(mimoUrlInput.text.toString().trim().ifEmpty { "https://api.xiaomimimo.com/v1" })
         credStore.setMimoAsrModel(mimoAsrInput.text.toString().trim())
-        credStore.setMimoModel(mimoModelInput.text.toString().trim())
         credStore.setAutoListen(credStore.autoListen())
         credStore.setShowSpeechInfo(credStore.showSpeechInfo())
-        DebugLog.info("设置", "保存设置（自动登录=${credStore.autoLogin()}，自动监听=${credStore.autoListen()}，MIMO 模型=${credStore.mimoModel()}）")
+        DebugLog.info("设置", "保存设置（自动登录=${credStore.autoLogin()}，自动监听=${credStore.autoListen()}）")
         snack("设置已保存")
         if (close) finish()
         return true

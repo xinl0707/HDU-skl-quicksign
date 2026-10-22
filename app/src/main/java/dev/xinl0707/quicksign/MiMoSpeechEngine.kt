@@ -17,13 +17,9 @@ import kotlin.math.sqrt
 /**
  * 小米 MIMO 云端语音识别引擎（OpenAI 兼容接口，零第三方依赖）——持续切片版。
  *
- * 架构（v1.12.6 定版，用户确认改回两步方案）：
- * - 转写层：mimo-v2.5-asr 纯语音转写。每 3 秒切最近 10 秒（重叠 7 秒，降低断句概率），
- *   所有切片一律上传（含静音），转写文本流式回传（onResult）。
- * - 综合层：mimo-v2.6-flash（多模态对话模型）。App 端每收到一片转写后，把累积的
- *   转写文本交给 flash 综合判断 4 位签到码。提示词明确告知切片机制（10s/3s、重叠 7 秒、
- *   数字可能被拆段、内容有重复、同音字干扰），并区分"首次判断"与"后续累积判断"。
- *   以 flash 输出为准（App 端不做激进同音字映射——那曾导致安静环境下误输出数字）。
+ * 架构：纯 ASR 转写层（mimo-v2.5-asr）。每 3 秒切最近 10 秒（重叠 7 秒，降低断句概率），
+ * 所有切片一律上传（含静音），转写文本流式回传（onResult）。签到码提取由 App 端
+ * 本地四步算法完成（去噪声→数字替换→分段→取最长段），不调用大模型。
  *
  * 设计（应对课堂 15 秒签到窗口）：
  * - 录音线程持续写入 10 秒环形缓冲区（PCM 16k 单声道 16bit），全程不中断；
@@ -34,8 +30,7 @@ import kotlin.math.sqrt
 class MiMoSpeechEngine(
     private val apiKey: String,
     private val baseUrl: String = "https://api.xiaomimimo.com/v1",
-    private val asrModel: String = "mimo-v2.5-asr",
-    private val textModel: String = "mimo-v2.6-flash"
+    private val asrModel: String = "mimo-v2.5-asr"
 ) {
     interface Callback {
         fun onState(text: String)
@@ -83,119 +78,6 @@ class MiMoSpeechEngine(
         try { recThread?.interrupt() } catch (e: Exception) {}
         try { sliceThread?.interrupt() } catch (e: Exception) {}
         uploadPool.shutdownNow()
-    }
-
-    /**
-     * flash 综合判断：把累积的切片转写文本整体交给模型提取 4 位签到码。
-     * 解决跨切片断码（"2"与"588"分属两片）、同音字干扰（"五百二斤"→5827）——模型理解完整上下文后输出。
-     * first=true 使用"首次判断"提示词；之后用"累积判断"提示词（都写清 10s/3s 重叠 7 秒切片机制）。
-     * 成功返回 4 位纯数字，否则返回 null（异步回调在主线程）。
-     */
-    /**
-     * flash 综合判断 4 位签到码。回调第一个参数为校验通过的 4 位码（无则 null）；
-     * 第二个参数为模型原始输出全文（用于调试日志——即使模型输出"无"或乱码也要能查到）。
-     */
-    fun extractSignCode(context: String, first: Boolean, cb: (String?, String?) -> Unit) {
-        Thread {
-            try {
-                val sys = if (first) {
-                    "你是课堂签到码提取助手。老师在课堂上报 4 位数字签到码（例如「签到码是八一四七」或直接报「八一四七、八一四七」），下面是实时语音转写。\n" +
-                            "背景：转写每 3 秒切一片、相邻切片重叠 7 秒，同一句话可能重复出现，报码可能被切片截断成不完整数字。\n" +
-                            "提取规则：\n" +
-                            "1. 只有当转写里有明确报码内容时才提取：老师说「签到码是/签到码为/签到码 XXXX」，或老师直接报出一串数字。闲聊（「第X次测试」「记一下」「下一次写作业」「有人吗」等）里的数字不是签到码。\n" +
-                            "2. 老师可能重复报码。若转写出现 7 位串如「八一四七八一四」，完整签到码是开头 4 位 8147，后面的「八一四」是第二遍报码的开头被截断，忽略它；6 位串「八一四七八一」同理取开头 4 位 8147。\n" +
-                            "3. 报码可能被切片截断跨片拆分：前一 3 秒片只听到「三八三」、后一片听到「八」，可拼成完整码「三八三八」；同理「八一四」+「七」拼成「八一四七」。能拼出明确 4 位才输出，拼不出输出「无」。\n" +
-                            "4. 「吃/次/是/事/四/七/十/两/儿/百/斤/妻/武/无」等谐音字不是数字，严禁把它们当成数字猜测签到码。转写里没有明确数字报码时输出「无」。\n" +
-                            "5. 宁可输出「无」多等一片，也不要输出没有把握的码。\n" +
-                            "只输出 4 位数字或「无」，不要任何其他文字。"
-                } else {
-                    "继续判断签到码。下面是累计转写（每 3 秒新增一片，内容可能重复，数字可能跨片拆分或截断）。\n" +
-                            "规则同上：只从明确报码中提取；重复报码取开头第一个完整 4 位（如「八一四七八一四」取 8147，忽略尾部「八一四」）；截断的 3 位+1 位可拼成完整 4 位（如「三八三」+「八」=三八三八）；谐音字不算数字；没有明确报码输出「无」；宁可「无」也不猜。\n" +
-                            "只输出 4 位数字或「无」。"
-                }
-                val payload = JSONObject().apply {
-                    put("model", textModel)
-                    put("stream", false)   // 显式禁用流式：部分 OpenAI 兼容代理默认返回 SSE 流式，
-                                           // 会导致 readText() 一直读到流结束而服务端不关闭连接（心跳还会重置 readTimeout），请求永远不返回
-                    put("thinking", false)
-                    put("enable_thinking", false)
-                    put("messages", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "system")
-                            put("content", sys)
-                        })
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("content", context)
-                        })
-                    })
-                }
-                val conn = URL("${baseUrl.trimEnd('/')}/chat/completions").openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.connectTimeout = 3000
-                conn.readTimeout = 5000
-                conn.setRequestProperty("Authorization", "Bearer $apiKey")
-                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                conn.doOutput = true
-                var out: String? = null
-                var raw: String? = null   // 模型原始输出全文（调试日志用：模型输出"无"/乱码也要可查）
-                // 硬超时守护：即使 readText()/readLine() 被流式响应或服务端 hang 阻塞（readTimeout 被心跳重置），
-                // 8 秒后也强制断开连接，触发 SocketException 进入 catch 回调，杜绝请求永远不返回
-                val watchdog = Thread {
-                    try { Thread.sleep(8000) } catch (e: InterruptedException) { return@Thread }
-                    try { conn.disconnect() } catch (e: Exception) {}
-                }
-                watchdog.start()
-                try {
-                    conn.outputStream.write(payload.toString().toByteArray(Charsets.UTF_8))
-                    val code = conn.responseCode
-                    val contentType = conn.getHeaderField("Content-Type") ?: ""
-                    if (code in 200..299) {
-                        val content: String? = if (contentType.contains("event-stream", ignoreCase = true)) {
-                            // 服务端忽略了 stream=false 仍返回 SSE 流式：逐行解析拼接每个 chunk 的 delta.content，
-                            // 读到 [DONE] 或流结束即停；readTimeout 5s 在两次 readLine 无数据时触发，不会无限阻塞
-                            val reader = conn.inputStream.bufferedReader(Charsets.UTF_8)
-                            val sb = StringBuilder()
-                            var line: String?
-                            while (reader.readLine().also { line = it } != null) {
-                                val l = line ?: continue
-                                if (l.startsWith("data:")) {
-                                    val d = l.removePrefix("data:").trim()
-                                    if (d == "[DONE]") break
-                                    if (d.isEmpty()) continue
-                                    val chunk = try { JSONObject(d) } catch (e: Exception) { continue }
-                                    val delta = chunk.optJSONArray("choices")
-                                        ?.optJSONObject(0)?.optJSONObject("delta")
-                                        ?.optString("content", "") ?: ""
-                                    sb.append(delta)
-                                }
-                            }
-                            sb.toString().trim().ifEmpty { null }
-                        } else {
-                            // 普通非流式响应：一次性读完整 JSON，取 choices[0].message.content
-                            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
-                            val json = try { JSONObject(body) } catch (e: Exception) { null }
-                            json?.optJSONArray("choices")
-                                ?.optJSONObject(0)?.optJSONObject("message")
-                                ?.optString("content", "")?.trim()
-                        }
-                        raw = content
-                        out = if (content != null && content.length == 4 && content.all { it.isDigit() }) content else null
-                    } else {
-                        // 非 200（模型不存在/鉴权失败/限流等）：读错误体仅用于调试，最终按无结果回调
-                        val errBody = try { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.readText()?.take(200) } catch (e: Exception) { null }
-                        raw = "HTTP $code${if (errBody != null) " | $errBody" else ""}"
-                    }
-                } finally {
-                    watchdog.interrupt()
-                    conn.disconnect()
-                }
-                val final = out
-                mainHandler.post { cb(final, raw) }
-            } catch (e: Exception) {
-                mainHandler.post { cb(null, "异常: ${e.javaClass.simpleName}: ${e.message}") }
-            }
-        }.apply { start() }
     }
 
     // ------------------------------------------------------------------ 录音线程

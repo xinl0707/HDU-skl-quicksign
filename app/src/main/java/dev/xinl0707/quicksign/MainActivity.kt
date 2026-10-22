@@ -57,7 +57,7 @@ import java.net.URL
  *  - 登录过期自动重登（轮询检测登录页，自动填表提交）
  *  - 按域名切换 User-Agent：进 SSO 统一认证（sso.hdu.edu.cn）用桌面 UA 显示电脑端登录，
  *    回签到站点恢复移动 UA
- *  - 语音识别 4 位签到码自动输入：MIMO 云端引擎（ASR 转写 + LLM 综合判断）
+ *  - 语音识别 4 位签到码自动输入：MIMO 云端 ASR 转写 + 本地四步算法提取（不调用大模型）
  *  - 手动键盘全屏弹层兜底（打开时先收起网页自带键盘，不叠加遮挡）
  */
 class MainActivity : Activity() {
@@ -219,12 +219,8 @@ class MainActivity : Activity() {
     private var mimoSliceCount = 0  // MIMO 切片序号（识别日志细化）
     private var mimoEpoch = 0L      // 监听代际：每次启动监听 +1，旧代际的回调一律丢弃（防残留识别）
     private var lastAutoListenHintAt = 0L // 自动监听提示去重
-    // 两步架构（ASR 转写 + flash 综合判断）：转写累积池（最近 10 片 ≈ 30 秒）+ 判断状态
+    // ASR 转写累积池（最近 10 片 ≈ 30 秒），用于签到记录留底
     private val heardPool = ArrayDeque<String>()
-    private var llmExtractBusy = false // flash 综合判断进行中标志，避免并发重复调用
-    private var llmExtractFirst = true // 首次综合判断用"首次提示词"，之后用"累积提示词"
-    private var llmExtractSeq = 0      // 综合判断请求序号：新请求作废旧请求（旧回调回来时按序号丢弃）
-    private var llmExtractStartAt = 0L // 在途请求发起时间（超过 5s 未返回视为卡死，作废重发）
 
     private var manualCode = ""
     private var pendingPanelCode = "" // 网页未就绪时输满的码，就绪后自动补输
@@ -2777,16 +2773,12 @@ class MainActivity : Activity() {
         stopListeningQuiet()
         val key = credStore.mimoApiKey() ?: return
         opLog("监听", "启动 MIMO 语音监听（${if (auto) "自动" else "手动"}，模型=${credStore.mimoAsrModel()}）")
-        // 两步架构：ASR 专用模型纯转写 + flash 综合判断（用户确认改回，纯 flash 直出在安静环境下误报数字）
-        val engine = MiMoSpeechEngine(key, credStore.mimoBaseUrl(), credStore.mimoAsrModel(), credStore.mimoModel())
+        // ASR 专用模型纯转写，本地四步算法提取签到码（不调用大模型）
+        val engine = MiMoSpeechEngine(key, credStore.mimoBaseUrl(), credStore.mimoAsrModel())
         mimoEngine = engine
         listening = true
         mimoRestartCount = 0
         mimoSliceCount = 0
-        llmExtractBusy = false
-        llmExtractFirst = true
-        llmExtractSeq = 0
-        llmExtractStartAt = 0L
         heardPool.clear()
         // 监听代际：本次监听的唯一编号；旧代际（上一轮监听）残留回调一律丢弃
         mimoEpoch++
@@ -2810,21 +2802,17 @@ class MainActivity : Activity() {
                 addSpeechInfo("MIMO", "切片 $mimoSliceCount 转写：$clean")
                 heardPool.addLast(clean)
                 while (heardPool.size > 10) heardPool.removeFirst()
-                // 本地快速路径：四步提取（去噪声→数字替换→分段→取最长段），只认标准数字不做激进映射
-                val result = extractCode(clean)
-                if (result.code != null) {
-                    appendLog("extract 本地命中 ${result.code} → 直接提交，跳过 LLM")
+                // 本地快速路径：四步提取（去噪声→数字替换→分段→取最长段），纯本地不调用大模型
+                val code = extractCode(clean)
+                if (code != null) {
+                    appendLog("extract 本地命中 $code → 直接提交")
                     submitCode(
-                        result.code, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
-                        asrNote = "本地快速匹配：转写切片经四步提取（去噪声→数字替换→分段→取最长段）检测到签到码「${result.code}」，直接提交（未调用大模型）"
+                        code, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
+                        asrNote = "本地快速匹配：转写切片经四步提取（去噪声→数字替换→分段→取最长段）检测到签到码「$code」，直接提交"
                     )
                     return
                 }
-                if (result.needLlm) {
-                    // 仅当最长段恰好 3 位时交 LLM（可能是报码被截断，需结合历史上下文补全第 4 位）
-                    maybeLlmExtract()
-                }
-                // 最长段 ≤2 位或 >4 位无法确认 → 继续监听，不交 LLM（省 Token、避免闲聊误触发）
+                // 未命中 → 继续监听下一切片（纯本地模式，不调用大模型）
             }
 
             override fun onError(message: String) {
@@ -2861,64 +2849,6 @@ class MainActivity : Activity() {
         })
     }
 
-    /** 把累积的切片转写文本交给 flash 综合判断 4 位签到码。
-     *  最新优先：在途请求超过 5 秒未返回且已听到新内容 → 作废旧请求，直接用最新累积重发；
-     *  回调解锁后若又出现新切片 → 立即续调（不等下一个 3 秒切片），避免报码窗口被慢请求耗死 */
-    private fun maybeLlmExtract() {
-        if (epochStale()) return
-        if (filling) return
-        val combined = heardPool.joinToString(" ")
-        if (combined.isBlank()) return
-        val eng = mimoEngine ?: return
-        if (llmExtractBusy) {
-            // 在途请求已超过 5 秒仍未返回（网络慢/服务慢）且听到新转写 → 作废旧请求，立即用最新累积重发
-            if (System.currentTimeMillis() - llmExtractStartAt > 5000) {
-                appendLog("llm extract: 在途请求超过 5s 未返回，作废重发（最新转写优先）")
-                doLlmExtract(combined)
-            }
-            return
-        }
-        doLlmExtract(combined)
-    }
-
-    /** 发起一次 flash 综合判断（带序号，旧请求的异步回调按序号丢弃，不污染新请求） */
-    private fun doLlmExtract(combined: String) {
-        val eng = mimoEngine ?: return
-        llmExtractBusy = true
-        llmExtractStartAt = System.currentTimeMillis()
-        val mySeq = ++llmExtractSeq
-        val inputSize = heardPool.size
-        appendLog("llm extract${if (llmExtractFirst) " (首次)" else ""}: 输入${heardPool.size}条转写 = ${combined.take(300)}")
-        eng.extractSignCode(combined, llmExtractFirst) { code, raw ->
-            if (mySeq != llmExtractSeq) {
-                // 已被更新的请求作废：不解锁（新请求在途）、不写日志，旧结果直接丢弃
-                return@extractSignCode
-            }
-            llmExtractBusy = false
-            llmExtractFirst = false   // 首次提示词只用于第一轮，之后都用累积提示词
-            if (epochStale() || filling) return@extractSignCode
-            // 模型原始输出全文必记：4 位码 / "无" / 乱码都可回溯
-            appendLog("llm raw: ${raw?.take(200) ?: "(无输出/异常)"}")
-            if (code != null) {
-                appendLog("llm code: $code")
-                addSpeechInfo("综合", "判断为签到码 $code")
-                val asrSnapshot = combined   // clear 前先留底：记录识别依据
-                val asrNote = "AI 综合判定：本地未命中连续四位，结合最近 ${heardPool.size} 条 MIMO 转写切片，由大模型综合判定签到码为「$code」"
-                heardPool.clear()
-                submitCode(code, source = SignRecord.METHOD_VOICE, asrText = asrSnapshot, asrNote = asrNote)
-            } else {
-                addSpeechInfo("综合", "暂无可信签到码，继续监听")
-                // 解锁后若已有新切片（本次请求之后新到的转写），立即用最新累积续调，不等下一个切片
-                handler.post {
-                    if (!epochStale() && !filling && !llmExtractBusy && heardPool.size > inputSize) {
-                        appendLog("llm extract: 解锁后检测到新增转写，立即续调")
-                        maybeLlmExtract()
-                    }
-                }
-            }
-        }
-    }
-
     /** 当前监听代际是否已过期（监听已停止或被新一轮取代） */
     private fun epochStale(): Boolean = !listening
 
@@ -2951,11 +2881,8 @@ class MainActivity : Activity() {
      * 支持：阿拉伯数字、中文数字（零幺二两三四五六七八九洞）、
      * 数位词（千/百/十）直接剔除（如"两千五百八十八"→2588）、
      * 前后任意口语噪声（"签到码是2588"等）、逐位报数（"2 5 8 8"或"二五八八"）。
-     * 注意：混合短段（如"2"+"588"跨切片）无法可靠本地拼接，返回 null 交给 LLM 提取。
+     * 纯本地提取，不调用大模型；提取不出返回 null，继续监听下一切片。
      */
-    /** 本地提取结果：code=签到码（null 表示未命中）；needLlm=是否需要交给大模型综合判断 */
-    private data class ExtractResult(val code: String?, val needLlm: Boolean)
-
     // 标点+空白：匹配中英文全部标点符号（\p{P}）和所有空白字符（\s），第一步统一清除
     private val punctSpaceRegex = Regex("[\\p{P}\\s]")
 
@@ -3014,45 +2941,41 @@ class MainActivity : Activity() {
      *
      * 四步流程：
      * ①去标点空格 → ②汉字/口语/英文数字替换为阿拉伯 → ③去语气词残留英文 → ④按数字间≥2非数字字符分段
-     * 然后取最长段：≤2位直接失败（不交LLM）；==3位交LLM综合判断；==4位即签到码；
-     * >4位分析重复报码（前缀循环/前4位再次出现则取前4位，否则失败不交LLM）。
+     * 然后取最长段：≤3位直接失败（纯本地不调大模型）；==4位即签到码；
+     * >4位分析重复报码（前缀循环/前4位再次出现则取前4位，否则失败）。
      */
-    private fun extractCode(text: String): ExtractResult {
+    private fun extractCode(text: String): String? {
         if (text.isBlank()) {
-            appendLog("extract 空输入 → 失败（不交 LLM）")
-            return ExtractResult(null, false)
+            appendLog("extract 空输入 → 失败")
+            return null
         }
         appendLog("extract 原文: ${text.take(200)}")
         // 第一步：去标点、空格（中英文全部标点）
         var s = punctSpaceRegex.replace(text, "")
         appendLog("extract 去标点空格: ${s.take(200)}")
-        if (s.isEmpty()) return ExtractResult(null, false)
+        if (s.isEmpty()) return null
         // 第二步：汉字/口语/英文数字 → 阿拉伯数字
         s = toArabicDigits(s)
         appendLog("extract 数字替换: ${s.take(200)}")
         // 第三步：去语气词和残留英文字母（英文数字已替换，剩余英文都是噪声）
         s = fillerAndAlphaRegex.replace(s, "")
         appendLog("extract 去语气词残留英文: ${s.take(200)}")
-        if (s.isEmpty()) return ExtractResult(null, false)
+        if (s.isEmpty()) return null
         // 第四步：分段（两个数字之间 ≥2 个非数字字符才分段）
         val segments = splitByDigitGap(s, minGap = 2)
         appendLog("extract 分段: ${segments.joinToString(" | ") { "${it.length}位=$it" }}")
-        if (segments.isEmpty()) return ExtractResult(null, false)
+        if (segments.isEmpty()) return null
         // 第五步：取最长段判定
         val longest = segments.maxByOrNull { it.length }!!
         appendLog("extract 最长段: ${longest.length}位=$longest")
         return when {
-            longest.length <= 2 -> {
-                appendLog("extract 最长段≤2位 → 失败（不交 LLM）")
-                ExtractResult(null, false)
-            }
-            longest.length == 3 -> {
-                appendLog("extract 最长段3位 → 交 LLM 综合判断")
-                ExtractResult(null, true)
+            longest.length <= 3 -> {
+                appendLog("extract 最长段≤3位 → 失败（继续监听）")
+                null
             }
             longest.length == 4 -> {
                 appendLog("extract 最长段恰好4位 → $longest")
-                ExtractResult(longest, false)
+                longest
             }
             else -> {
                 // >4位：分析重复报码
@@ -3062,10 +2985,10 @@ class MainActivity : Activity() {
                 // 情况2：中间掺杂其他数字（1234551234）→ prefix4 在串内再次出现
                 if (repeatPrefixMatch(prefix4, rest) || longest.indexOf(prefix4, 1) > 0) {
                     appendLog("extract 长串${longest.length}位重复报码 → 完整码 $prefix4")
-                    ExtractResult(prefix4, false)
+                    prefix4
                 } else {
-                    appendLog("extract 长串${longest.length}位无法确认 → 失败（不交 LLM）")
-                    ExtractResult(null, false)
+                    appendLog("extract 长串${longest.length}位无法确认 → 失败（继续监听）")
+                    null
                 }
             }
         }

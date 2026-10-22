@@ -96,14 +96,6 @@ class CredentialStore(context: Context) {
         prefs.edit().putString("mimo_url", url.trim()).apply()
     }
 
-    /** MIMO 综合判断模型（flash 多模态，用于把累积转写文本提取成 4 位签到码） */
-    fun mimoModel(): String =
-        prefs.getString("mimo_model", "mimo-v2.6-flash") ?: "mimo-v2.6-flash"
-
-    fun setMimoModel(model: String) {
-        prefs.edit().putString("mimo_model", model.trim().ifEmpty { "mimo-v2.6-flash" }).apply()
-    }
-
     /** MIMO ASR 转写模型（纯语音转写，官方：mimo-v2.5-asr） */
     fun mimoAsrModel(): String =
         prefs.getString("mimo_asr_model", "mimo-v2.5-asr") ?: "mimo-v2.5-asr"
