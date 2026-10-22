@@ -223,6 +223,8 @@ class MainActivity : Activity() {
     private val heardPool = ArrayDeque<String>()
     private var llmExtractBusy = false // flash 综合判断进行中标志，避免并发重复调用
     private var llmExtractFirst = true // 首次综合判断用"首次提示词"，之后用"累积提示词"
+    private var llmExtractSeq = 0      // 综合判断请求序号：新请求作废旧请求（旧回调回来时按序号丢弃）
+    private var llmExtractStartAt = 0L // 在途请求发起时间（超过 5s 未返回视为卡死，作废重发）
 
     private var manualCode = ""
     private var pendingPanelCode = "" // 网页未就绪时输满的码，就绪后自动补输
@@ -2444,18 +2446,20 @@ class MainActivity : Activity() {
         resultWatchActive = false
         hideResultWaiting()                        // 收掉结果等待转圈
         vibrate(60)                                // 签到成功震动反馈（清脆单震）
-        // 提取 detail 页正文解析课程与统计（页面异步渲染，最多重试 8 次 × 600ms ≈ 4.8 秒）。
-        // 关键：必须等数据真正加载完成再弹——跳 detail 瞬间正文是「课堂签到统计」占位 + 「正在验证中...」
-        // + 课程总学时 0，此时抓取会得到全 0 的错误数据（实测 600ms 后课程名/总学时/考勤数才返回）。
+        // URL 已跳 detail = 签到成功：立即弹覆盖页（先显示「签到成功 / 加载考勤数据中…」），
+        // 不给用户"键盘消失后干等"的空白期；考勤数据异步就绪后由 extract() 原位更新，不再二次弹窗。
+        showSignResultOverlay(loading = true)
+        // 后台解析 detail 页正文（页面异步渲染，最多重试 8 次 × 600ms ≈ 4.8 秒）；
+        // 跳 detail 瞬间正文是「课堂签到统计」占位 + 「正在验证中...」+ 课程总学时 0，
+        // 此时抓取会得到全 0 的错误数据（实测 600ms 后课程名/总学时/考勤数才返回）。
         fun extract(attempt: Int) {
             evalJs("(function(){try{return document.body.innerText||''}catch(e){return ''}})()") { text ->
                 val t = text ?: ""
                 val dataLoaded = t.contains("签到完成") && !t.contains("正在验证中") &&
                     Regex("旷课学时\\s*\\d+\\s*/\\s*课程总学时\\s*[1-9]\\d*").containsMatchIn(t)
                 if (dataLoaded || attempt >= 8) {
-                    parseSignResult(t)
-                    saveSuccessRecord()   // 签到成功：解析数据 → 本地记录（v3.2.5 起不再截图，直接弹覆盖页）
-                    showSignResultOverlay()
+                    parseSignResult(t)   // 原位更新覆盖页考勤卡（课程名/学时/比例/四格，替换 loading 文案）
+                    saveSuccessRecord()  // 签到成功：解析数据 → 本地记录（v3.2.5 起不再截图，直接弹覆盖页）
                     successHandling = false
                 } else {
                     handler.postDelayed({ extract(attempt + 1) }, 600)
@@ -2595,7 +2599,7 @@ class MainActivity : Activity() {
 
 
     /** 显示签到完成覆盖页（淡入 + 成功彩带） */
-    private fun showSignResultOverlay() {
+    private fun showSignResultOverlay(loading: Boolean = false) {
         if (signResultShown) return
         signResultShown = true
         prevSigned = true
@@ -2604,6 +2608,14 @@ class MainActivity : Activity() {
         // 覆盖页关闭后由签到页状态机（signReady=true）自动恢复显示
         panelCodeDisplay?.visibility = View.GONE
         launchConfetti()   // 成功彩带（盖在覆盖页之上）
+        if (loading) {
+            // 先弹部分内容：URL 已跳 detail = 签到成功，但考勤数据还在异步加载——立即给出成功反馈，
+            // 数据就绪后由 updateSignResultData() 原位填入（不再二次弹窗）
+            resultCourseText?.text = "正在加载考勤数据…"
+            resultHoursText?.text = "—"
+            resultRatioText?.text = "—"
+            resultStatsText?.text = "—"
+        }
         val ov = resultOverlay ?: return
         ov.alpha = 0f
         ov.scaleX = 0.96f
@@ -2773,6 +2785,8 @@ class MainActivity : Activity() {
         mimoSliceCount = 0
         llmExtractBusy = false
         llmExtractFirst = true
+        llmExtractSeq = 0
+        llmExtractStartAt = 0L
         heardPool.clear()
         // 监听代际：本次监听的唯一编号；旧代际（上一轮监听）残留回调一律丢弃
         mimoEpoch++
@@ -2862,16 +2876,39 @@ class MainActivity : Activity() {
         })
     }
 
-    /** 把累积的切片转写文本交给 flash 综合判断 4 位签到码（每 3 秒一次；以 flash 输出为准） */
+    /** 把累积的切片转写文本交给 flash 综合判断 4 位签到码。
+     *  最新优先：在途请求超过 5 秒未返回且已听到新内容 → 作废旧请求，直接用最新累积重发；
+     *  回调解锁后若又出现新切片 → 立即续调（不等下一个 3 秒切片），避免报码窗口被慢请求耗死 */
     private fun maybeLlmExtract() {
         if (epochStale()) return
-        if (llmExtractBusy || filling) return
+        if (filling) return
         val combined = heardPool.joinToString(" ")
         if (combined.isBlank()) return
         val eng = mimoEngine ?: return
+        if (llmExtractBusy) {
+            // 在途请求已超过 5 秒仍未返回（网络慢/服务慢）且听到新转写 → 作废旧请求，立即用最新累积重发
+            if (System.currentTimeMillis() - llmExtractStartAt > 5000) {
+                appendLog("llm extract: 在途请求超过 5s 未返回，作废重发（最新转写优先）")
+                doLlmExtract(combined)
+            }
+            return
+        }
+        doLlmExtract(combined)
+    }
+
+    /** 发起一次 flash 综合判断（带序号，旧请求的异步回调按序号丢弃，不污染新请求） */
+    private fun doLlmExtract(combined: String) {
+        val eng = mimoEngine ?: return
         llmExtractBusy = true
+        llmExtractStartAt = System.currentTimeMillis()
+        val mySeq = ++llmExtractSeq
+        val inputSize = heardPool.size
         appendLog("llm extract${if (llmExtractFirst) " (首次)" else ""}: 输入${heardPool.size}条转写 = ${combined.take(300)}")
         eng.extractSignCode(combined, llmExtractFirst) { code, raw ->
+            if (mySeq != llmExtractSeq) {
+                // 已被更新的请求作废：不解锁（新请求在途）、不写日志，旧结果直接丢弃
+                return@extractSignCode
+            }
             llmExtractBusy = false
             llmExtractFirst = false   // 首次提示词只用于第一轮，之后都用累积提示词
             if (epochStale() || filling) return@extractSignCode
@@ -2886,6 +2923,13 @@ class MainActivity : Activity() {
                 submitCode(code, source = SignRecord.METHOD_VOICE, asrText = asrSnapshot, asrNote = asrNote)
             } else {
                 addSpeechInfo("综合", "暂无可信签到码，继续监听")
+                // 解锁后若已有新切片（本次请求之后新到的转写），立即用最新累积续调，不等下一个切片
+                handler.post {
+                    if (!epochStale() && !filling && !llmExtractBusy && heardPool.size > inputSize) {
+                        appendLog("llm extract: 解锁后检测到新增转写，立即续调")
+                        maybeLlmExtract()
+                    }
+                }
             }
         }
     }
@@ -2996,11 +3040,24 @@ class MainActivity : Activity() {
         for (m in merged) {
             when {
                 m.length == 4 -> fourCandidates.add(m)
-                m.length > 4 && repeatPrefixMatch(m.substring(0, 4), m.substring(4)) && cycleHit == null -> {
+                // 长串重复报码：前4位构成前缀循环（81478147→8147），或前4位在串内再次出现（7593557593→7593，中间夹杂第二遍报码被截断的残余）
+                m.length > 4 && cycleHit == null && (
+                    repeatPrefixMatch(m.substring(0, 4), m.substring(4)) ||
+                    m.indexOf(m.substring(0, 4), 1) > 0
+                ) -> {
                     cycleHit = m.substring(0, 4)
-                    appendLog("extract 长串${m.length}位循环重复 → 完整码 $cycleHit")
+                    appendLog("extract 长串${m.length}位重复报码 → 完整码 $cycleHit")
                 }
                 else -> appendLog("extract 合并段 $m (${m.length}位) 无法本地确认")
+            }
+        }
+        // 补充：合并前的原始段中恰好 4 位的——可拼间隔（逗号等）会把独立 4 位段并入长串，
+        // 如「七五九三五五，七五九三」里的「七五九三」被拼成 7593557593 后丢失，这里找回
+        for (s in segs) {
+            val d = segToDigits(s)
+            if (d.length == 4 && d !in fourCandidates) {
+                fourCandidates.add(d)
+                appendLog("extract 原始段恰好4位 → 补充候选 $d")
             }
         }
         if (cycleHit != null) {

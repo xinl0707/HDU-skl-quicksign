@@ -130,8 +130,8 @@ class MiMoSpeechEngine(
                 }
                 val conn = URL("${baseUrl.trimEnd('/')}/chat/completions").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
-                conn.connectTimeout = 8000
-                conn.readTimeout = 15000
+                conn.connectTimeout = 4000
+                conn.readTimeout = 8000
                 conn.setRequestProperty("Authorization", "Bearer $apiKey")
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 conn.doOutput = true

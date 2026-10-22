@@ -812,14 +812,16 @@ class SettingsActivity : Activity() {
         val exportBtn = button("导出调试记录", LIGHT, ACCENT, radius = 16)
         exportBtn.setOnClickListener { exportDebug() }
         btnRow.addView(exportBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val testBtn = button("弹窗测试", LIGHT, ACCENT, radius = 16)
+        val testBtn = button("动画测试", LIGHT, ACCENT, radius = 16)
         testBtn.setOnClickListener {
-            sheetMenu("弹窗测试（返回主界面后触发）", listOf(
-                "签到成功覆盖页" to { launchTest("success") },
+            sheetMenu("动画与弹窗测试", listOf(
+                "开屏动画（重新进入主界面）" to { launchTest("splash") },
+                "签到成功覆盖页 + 彩带" to { launchTest("success") },
+                "大数字 + 彩带" to { launchTest("bigcode") },
                 "签到码无效弹窗" to { launchTest("invalid") },
                 "结果等待转圈" to { launchTest("waiting") },
-                "大数字 + 彩带" to { launchTest("bigcode") },
-                "Toast 提示" to { launchTest("toast") }
+                "底部浮层提示（本页演示）" to { snack("这是底部浮层示例，2 秒后自动消失") },
+                "居中警示卡（本页演示）" to { warn("居中警示卡示例", "失败或需确认的场景使用这种卡片，需手动点「知道了」关闭。") }
             ))
         }
         btnRow.addView(testBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -949,6 +951,12 @@ class SettingsActivity : Activity() {
     }
 
     private fun launchTest(type: String) {
+        if (type == "splash") {
+            // 开屏动画：直接启动一个新的主界面实例（onCreate 会播放开屏），关闭设置页回到主界面
+            startActivity(Intent(this, MainActivity::class.java))
+            finish()
+            return
+        }
         startActivity(Intent(this, MainActivity::class.java)
             .putExtra("test_overlay", type)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
