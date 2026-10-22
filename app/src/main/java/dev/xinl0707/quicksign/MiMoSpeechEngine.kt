@@ -115,6 +115,8 @@ class MiMoSpeechEngine(
                 }
                 val payload = JSONObject().apply {
                     put("model", textModel)
+                    put("stream", false)   // 显式禁用流式：部分 OpenAI 兼容代理默认返回 SSE 流式，
+                                           // 会导致 readText() 一直读到流结束而服务端不关闭连接（心跳还会重置 readTimeout），请求永远不返回
                     put("thinking", false)
                     put("enable_thinking", false)
                     put("messages", JSONArray().apply {
@@ -130,39 +132,68 @@ class MiMoSpeechEngine(
                 }
                 val conn = URL("${baseUrl.trimEnd('/')}/chat/completions").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
-                conn.connectTimeout = 4000
-                conn.readTimeout = 8000
+                conn.connectTimeout = 3000
+                conn.readTimeout = 5000
                 conn.setRequestProperty("Authorization", "Bearer $apiKey")
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 conn.doOutput = true
                 var out: String? = null
                 var raw: String? = null   // 模型原始输出全文（调试日志用：模型输出"无"/乱码也要可查）
+                // 硬超时守护：即使 readText()/readLine() 被流式响应或服务端 hang 阻塞（readTimeout 被心跳重置），
+                // 8 秒后也强制断开连接，触发 SocketException 进入 catch 回调，杜绝请求永远不返回
+                val watchdog = Thread {
+                    try { Thread.sleep(8000) } catch (e: InterruptedException) { return@Thread }
+                    try { conn.disconnect() } catch (e: Exception) {}
+                }
+                watchdog.start()
                 try {
                     conn.outputStream.write(payload.toString().toByteArray(Charsets.UTF_8))
                     val code = conn.responseCode
-                    val body = if (code in 200..299) {
-                        conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
-                    } else {
-                        conn.errorStream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
-                    }
+                    val contentType = conn.getHeaderField("Content-Type") ?: ""
                     if (code in 200..299) {
-                        val json = try { JSONObject(body) } catch (e: Exception) { null }
-                        val content = json
-                            ?.optJSONArray("choices")
-                            ?.optJSONObject(0)
-                            ?.optJSONObject("message")
-                            ?.optString("content", "")
-                            ?.trim()
+                        val content: String? = if (contentType.contains("event-stream", ignoreCase = true)) {
+                            // 服务端忽略了 stream=false 仍返回 SSE 流式：逐行解析拼接每个 chunk 的 delta.content，
+                            // 读到 [DONE] 或流结束即停；readTimeout 5s 在两次 readLine 无数据时触发，不会无限阻塞
+                            val reader = conn.inputStream.bufferedReader(Charsets.UTF_8)
+                            val sb = StringBuilder()
+                            var line: String?
+                            while (reader.readLine().also { line = it } != null) {
+                                val l = line ?: continue
+                                if (l.startsWith("data:")) {
+                                    val d = l.removePrefix("data:").trim()
+                                    if (d == "[DONE]") break
+                                    if (d.isEmpty()) continue
+                                    val chunk = try { JSONObject(d) } catch (e: Exception) { continue }
+                                    val delta = chunk.optJSONArray("choices")
+                                        ?.optJSONObject(0)?.optJSONObject("delta")
+                                        ?.optString("content", "") ?: ""
+                                    sb.append(delta)
+                                }
+                            }
+                            sb.toString().trim().ifEmpty { null }
+                        } else {
+                            // 普通非流式响应：一次性读完整 JSON，取 choices[0].message.content
+                            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                            val json = try { JSONObject(body) } catch (e: Exception) { null }
+                            json?.optJSONArray("choices")
+                                ?.optJSONObject(0)?.optJSONObject("message")
+                                ?.optString("content", "")?.trim()
+                        }
                         raw = content
                         out = if (content != null && content.length == 4 && content.all { it.isDigit() }) content else null
+                    } else {
+                        // 非 200（模型不存在/鉴权失败/限流等）：读错误体仅用于调试，最终按无结果回调
+                        val errBody = try { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.readText()?.take(200) } catch (e: Exception) { null }
+                        raw = "HTTP $code${if (errBody != null) " | $errBody" else ""}"
                     }
                 } finally {
+                    watchdog.interrupt()
                     conn.disconnect()
                 }
                 val final = out
                 mainHandler.post { cb(final, raw) }
             } catch (e: Exception) {
-                mainHandler.post { cb(null, null) }
+                mainHandler.post { cb(null, "异常: ${e.javaClass.simpleName}: ${e.message}") }
             }
         }.apply { start() }
     }

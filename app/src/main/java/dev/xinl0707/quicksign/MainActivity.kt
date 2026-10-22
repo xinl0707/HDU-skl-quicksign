@@ -2818,7 +2818,11 @@ class MainActivity : Activity() {
                     // 重复报码被切片截断时，尾部片段（如"八一四七八一四"的"七八一四"）恰好也是连续4位，
                     // 但它是第二遍报码的尾部不是完整码。若历史转写里有更长连续段以其结尾 → 取长段前4位（历史已含完整报码）
                     val tailSeg = findTailOfLongerSegment(quick)
-                    if (tailSeg != null) {
+                    if (tailSeg != null && !tailSeg.startsWith(quick)) {
+                        // 仅当历史长段不以 quick 开头（quick 只作为长段末尾的残余出现，如"八一四七八一四"里的"七八一四"）
+                        // 才认为 quick 是「第二遍报码被截断的尾部」；若长段以 quick 开头
+                        // （如"七一二三五八七一二三"以 7123 开头、"七一二三五"也以 7123 开头），quick 本身就是完整码，
+                        // 不能进尾部分支——否则会把本地已命中的码误判成残码，白白交给大模型（而大模型可能超时/不可用）
                         if (repeatPrefixMatch(tailSeg.substring(0, 4), tailSeg.substring(4))) {
                             val full = tailSeg.substring(0, 4)
                             appendLog("extract 命中 $quick 为重复报码尾部 → 历史长段前4位 $full → 直接提交，跳过 LLM")
