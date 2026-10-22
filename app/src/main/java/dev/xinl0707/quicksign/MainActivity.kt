@@ -2804,46 +2804,27 @@ class MainActivity : Activity() {
                 val clean = text.trim()
                 if (clean.isEmpty()) {
                     addSpeechInfo("MIMO", "切片 $mimoSliceCount 识别结果：空")
-                    maybeLlmExtract()
-                    return
+                    return   // 空切片不交 LLM（最长段 0 位 ≤2）
                 }
                 appendLog("mimo slice $mimoSliceCount: ${clean.take(200)}")
                 addSpeechInfo("MIMO", "切片 $mimoSliceCount 转写：$clean")
                 heardPool.addLast(clean)
                 while (heardPool.size > 10) heardPool.removeFirst()
-                // 本地快速路径：转写里直接有连续标准数字（阿拉伯/中文数字字）→ 立即注入，省一次 flash 调用
-                // 注意：只认标准数字，不做激进同音字映射（那曾导致安静环境误输出数字）
-                val quick = extractCode(clean)
-                if (quick != null && quick.length == 4) {
-                    // 重复报码被切片截断时，尾部片段（如"八一四七八一四"的"七八一四"）恰好也是连续4位，
-                    // 但它是第二遍报码的尾部不是完整码。若历史转写里有更长连续段以其结尾 → 取长段前4位（历史已含完整报码）
-                    val tailSeg = findTailOfLongerSegment(quick)
-                    if (tailSeg != null && !tailSeg.startsWith(quick)) {
-                        // 仅当历史长段不以 quick 开头（quick 只作为长段末尾的残余出现，如"八一四七八一四"里的"七八一四"）
-                        // 才认为 quick 是「第二遍报码被截断的尾部」；若长段以 quick 开头
-                        // （如"七一二三五八七一二三"以 7123 开头、"七一二三五"也以 7123 开头），quick 本身就是完整码，
-                        // 不能进尾部分支——否则会把本地已命中的码误判成残码，白白交给大模型（而大模型可能超时/不可用）
-                        if (repeatPrefixMatch(tailSeg.substring(0, 4), tailSeg.substring(4))) {
-                            val full = tailSeg.substring(0, 4)
-                            appendLog("extract 命中 $quick 为重复报码尾部 → 历史长段前4位 $full → 直接提交，跳过 LLM")
-                            submitCode(
-                                full, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
-                                asrNote = "本地快速匹配：转写切片检测到连续四位「$quick」为重复报码的尾部，结合历史长段确认完整签到码「$full」，直接提交（未调用大模型）"
-                            )
-                        } else {
-                            appendLog("extract 命中 $quick 但历史长段无法确认完整码 → 交 LLM")
-                            maybeLlmExtract()
-                        }
-                        return
-                    }
-                    appendLog("extract 快速路径命中 $quick → 直接提交，跳过 LLM")
+                // 本地快速路径：四步提取（去噪声→数字替换→分段→取最长段），只认标准数字不做激进映射
+                val result = extractCode(clean)
+                if (result.code != null) {
+                    appendLog("extract 本地命中 ${result.code} → 直接提交，跳过 LLM")
                     submitCode(
-                        quick, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
-                        asrNote = "本地快速匹配：转写切片中检测到连续四位「$quick」，符合连续四位规则，直接提交（未调用大模型）"
+                        result.code, source = SignRecord.METHOD_VOICE, asrText = heardPool.joinToString(" "),
+                        asrNote = "本地快速匹配：转写切片经四步提取（去噪声→数字替换→分段→取最长段）检测到签到码「${result.code}」，直接提交（未调用大模型）"
                     )
                     return
                 }
-                maybeLlmExtract()
+                if (result.needLlm) {
+                    // 仅当最长段恰好 3 位时交 LLM（可能是报码被截断，需结合历史上下文补全第 4 位）
+                    maybeLlmExtract()
+                }
+                // 最长段 ≤2 位或 >4 位无法确认 → 继续监听，不交 LLM（省 Token、避免闲聊误触发）
             }
 
             override fun onError(message: String) {
@@ -2972,112 +2953,122 @@ class MainActivity : Activity() {
      * 前后任意口语噪声（"签到码是2588"等）、逐位报数（"2 5 8 8"或"二五八八"）。
      * 注意：混合短段（如"2"+"588"跨切片）无法可靠本地拼接，返回 null 交给 LLM 提取。
      */
-    /**
-     * 从语音转写文本中提取 4 位签到码（本地快速路径，只认标准数字，绝不激进映射）。
-     *
-     * 原则：安静/杂音环境下宁可提取不到（交给 flash 综合判断），也不能把任意句子的
-     * 同音字拼成 4 位数字误注入（v1.12.3 的激进同音映射曾导致"不说话也输出数字"）。
-     * 只支持：阿拉伯数字、中文数字字（零/洞/幺/一/二/两/三/四/五/六/七/八/九）、英文数字单词；
-     * 剔除语气词；同音字归一化（"五百二斤"→5827 等）全部交给 flash 语义判断。
-     */
-    private fun extractCode(text: String): String? {
-        if (text.isBlank()) {
-            appendLog("extract 空输入 → null")
-            return null
-        }
-        appendLog("extract 原文: ${text.take(200)}")
-        // 1. 剔除语气词/助词（不参与数字映射）
-        var s = text
-        for (ch in charArrayOf('啊', '哦', '嗯', '呢', '嘛', '的', '了', '个', '是', '呀', '啦', '哈', '喂', '诶', '好')) {
-            s = s.replace(ch.toString(), "")
-        }
-        appendLog("extract 剔除语气词: ${s.take(200)}")
-        // 2. 英文数字单词 → 阿拉伯
-        val enMap = mapOf(
-            "zero" to "0", "one" to "1", "two" to "2", "three" to "3", "four" to "4",
-            "five" to "5", "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9"
+    /** 本地提取结果：code=签到码（null 表示未命中）；needLlm=是否需要交给大模型综合判断 */
+    private data class ExtractResult(val code: String?, val needLlm: Boolean)
+
+    // 标点+空白：匹配中英文全部标点符号（\p{P}）和所有空白字符（\s），第一步统一清除
+    private val punctSpaceRegex = Regex("[\\p{P}\\s]")
+
+    // 语气词 + 残留英文字母：第二步数字替换后，剩下的英文字母都是噪声（one/two 等已替换为阿拉伯数字）
+    private val fillerAndAlphaRegex = Regex("[啊呀吧呢啦哦嗯哎唉喂嘿哈哼呃噢喔哇嘛么呐嗷唔嗨哟哩咧喽呗哒嘞嗳诶呸嘻吓呼呵啐哏唷嗬a-zA-Z]")
+
+    /** 第二步：汉字数字（大小写）、口语变体、英文数字单词 → 纯阿拉伯数字 */
+    private fun toArabicDigits(s: String): String {
+        var r = s
+        // 英文数字单词（按字母长度降序，避免短词先匹配破坏长词）
+        val enMap = listOf(
+            "seven" to "7", "eight" to "8", "three" to "3", "zero" to "0",
+            "four" to "4", "five" to "5", "nine" to "9", "one" to "1",
+            "two" to "2", "six" to "6", "ten" to "10"
         )
         for ((en, d) in enMap) {
-            s = Regex("(?i)\\b$en\\b").replace(s, d)
+            r = Regex("(?i)$en").replace(r, d)
         }
-        appendLog("extract 英文替换: ${s.take(200)}")
-        // 3. 提取所有数字段；仅当段间间隔只含标点/空白（逗号顿号等，不含任何实义文字）时拼接，
-        //    还原 ASR 断句拆开的连续报码（"一二三，四一二三" → 1234123）。"第一次""签到码是"等文字间隔不可拼。
-        val segs = mutableListOf<String>()
-        val gaps = mutableListOf<String>()
-        var pp = 0
-        var cur = StringBuilder()
-        var pendingGap = StringBuilder()
-        var havePendingGap = false
-        while (pp < s.length) {
-            if (isDigitChar(s[pp])) {
-                // 遇到新数字段时定档上一段尾的间隔；文本开头的非数字前缀（如"听到吗？"）不属于段间，丢弃
-                if (havePendingGap) {
-                    if (segs.isNotEmpty()) gaps.add(pendingGap.toString())
-                    havePendingGap = false
+        // 口语变体：幺=1、两/俩=2、仨=3
+        r = r.replace("幺", "1").replace("两", "2").replace("俩", "2").replace("仨", "3")
+        // 汉字大写数字
+        r = r.replace("壹", "1").replace("贰", "2").replace("叁", "3").replace("肆", "4")
+            .replace("伍", "5").replace("陆", "6").replace("柒", "7").replace("捌", "8")
+            .replace("玖", "9").replace("拾", "10")
+        // 汉字小写数字
+        r = r.replace("零", "0").replace("一", "1").replace("二", "2").replace("三", "3")
+            .replace("四", "4").replace("五", "5").replace("六", "6").replace("七", "7")
+            .replace("八", "8").replace("九", "9").replace("十", "10")
+        return r
+    }
+
+    /** 第三步分段：两个阿拉伯数字之间 ≥ minGap 个非数字字符才切分为新段；
+     *  间隔 0-1 个字符（语气词/单字废话）视为同一段，还原老师连续报码 */
+    private fun splitByDigitGap(s: String, minGap: Int = 2): List<String> {
+        val segments = mutableListOf<String>()
+        val current = StringBuilder()
+        var gap = 0
+        for (c in s) {
+            if (c.isDigit()) {
+                if (gap >= minGap && current.isNotEmpty()) {
+                    segments.add(current.toString())
+                    current.clear()
                 }
-                cur.append(s[pp]); pp++
+                current.append(c)
+                gap = 0
             } else {
-                if (cur.isNotEmpty()) { segs.add(cur.toString()); cur = StringBuilder() }
-                pendingGap = StringBuilder()
-                while (pp < s.length && !isDigitChar(s[pp])) { pendingGap.append(s[pp]); pp++ }
-                havePendingGap = true
+                gap++
             }
         }
-        if (cur.isNotEmpty()) segs.add(cur.toString())
-        if (segs.isEmpty()) {
-            appendLog("extract 无连续数字 → null，交 LLM")
-            return null
+        if (current.isNotEmpty()) segments.add(current.toString())
+        return segments
+    }
+
+    /**
+     * 从语音转写文本中提取 4 位签到码（本地快速路径）。
+     *
+     * 四步流程：
+     * ①去标点空格 → ②汉字/口语/英文数字替换为阿拉伯 → ③去语气词残留英文 → ④按数字间≥2非数字字符分段
+     * 然后取最长段：≤2位直接失败（不交LLM）；==3位交LLM综合判断；==4位即签到码；
+     * >4位分析重复报码（前缀循环/前4位再次出现则取前4位，否则失败不交LLM）。
+     */
+    private fun extractCode(text: String): ExtractResult {
+        if (text.isBlank()) {
+            appendLog("extract 空输入 → 失败（不交 LLM）")
+            return ExtractResult(null, false)
         }
-        // 按可拼间隔合并
-        val merged = mutableListOf<String>()
-        var curM = segToDigits(segs[0])
-        for (i in 1 until segs.size) {
-            val gap = if (i - 1 < gaps.size) gaps[i - 1] else ""
-            if (isPunctGap(gap)) curM += segToDigits(segs[i]) else { merged.add(curM); curM = segToDigits(segs[i]) }
-        }
-        merged.add(curM)
-        appendLog("extract 数字段: ${segs.joinToString(" | ") { s -> "\"$s\"" }} 间隔: ${gaps.joinToString(" | ") { g -> "\"$g\"" }} → 可拼后: ${merged.joinToString(" | ")}")
-        // 4. 判定：优先循环重复长段（强证据）；其次唯一恰好4位段；多个4位段或无法确认 → 交 LLM
-        var cycleHit: String? = null
-        var fourCandidates = mutableListOf<String>()
-        for (m in merged) {
-            when {
-                m.length == 4 -> fourCandidates.add(m)
-                // 长串重复报码：前4位构成前缀循环（81478147→8147），或前4位在串内再次出现（7593557593→7593，中间夹杂第二遍报码被截断的残余）
-                m.length > 4 && cycleHit == null && (
-                    repeatPrefixMatch(m.substring(0, 4), m.substring(4)) ||
-                    m.indexOf(m.substring(0, 4), 1) > 0
-                ) -> {
-                    cycleHit = m.substring(0, 4)
-                    appendLog("extract 长串${m.length}位重复报码 → 完整码 $cycleHit")
+        appendLog("extract 原文: ${text.take(200)}")
+        // 第一步：去标点、空格（中英文全部标点）
+        var s = punctSpaceRegex.replace(text, "")
+        appendLog("extract 去标点空格: ${s.take(200)}")
+        if (s.isEmpty()) return ExtractResult(null, false)
+        // 第二步：汉字/口语/英文数字 → 阿拉伯数字
+        s = toArabicDigits(s)
+        appendLog("extract 数字替换: ${s.take(200)}")
+        // 第三步：去语气词和残留英文字母（英文数字已替换，剩余英文都是噪声）
+        s = fillerAndAlphaRegex.replace(s, "")
+        appendLog("extract 去语气词残留英文: ${s.take(200)}")
+        if (s.isEmpty()) return ExtractResult(null, false)
+        // 第四步：分段（两个数字之间 ≥2 个非数字字符才分段）
+        val segments = splitByDigitGap(s, minGap = 2)
+        appendLog("extract 分段: ${segments.joinToString(" | ") { "${it.length}位=$it" }}")
+        if (segments.isEmpty()) return ExtractResult(null, false)
+        // 第五步：取最长段判定
+        val longest = segments.maxByOrNull { it.length }!!
+        appendLog("extract 最长段: ${longest.length}位=$longest")
+        return when {
+            longest.length <= 2 -> {
+                appendLog("extract 最长段≤2位 → 失败（不交 LLM）")
+                ExtractResult(null, false)
+            }
+            longest.length == 3 -> {
+                appendLog("extract 最长段3位 → 交 LLM 综合判断")
+                ExtractResult(null, true)
+            }
+            longest.length == 4 -> {
+                appendLog("extract 最长段恰好4位 → $longest")
+                ExtractResult(longest, false)
+            }
+            else -> {
+                // >4位：分析重复报码
+                val prefix4 = longest.substring(0, 4)
+                val rest = longest.substring(4)
+                // 情况1：第二遍被截断（1234123/123412/12341）→ rest 是 prefix4 的前缀
+                // 情况2：中间掺杂其他数字（1234551234）→ prefix4 在串内再次出现
+                if (repeatPrefixMatch(prefix4, rest) || longest.indexOf(prefix4, 1) > 0) {
+                    appendLog("extract 长串${longest.length}位重复报码 → 完整码 $prefix4")
+                    ExtractResult(prefix4, false)
+                } else {
+                    appendLog("extract 长串${longest.length}位无法确认 → 失败（不交 LLM）")
+                    ExtractResult(null, false)
                 }
-                else -> appendLog("extract 合并段 $m (${m.length}位) 无法本地确认")
             }
         }
-        // 补充：合并前的原始段中恰好 4 位的——可拼间隔（逗号等）会把独立 4 位段并入长串，
-        // 如「七五九三五五，七五九三」里的「七五九三」被拼成 7593557593 后丢失，这里找回
-        for (s in segs) {
-            val d = segToDigits(s)
-            if (d.length == 4 && d !in fourCandidates) {
-                fourCandidates.add(d)
-                appendLog("extract 原始段恰好4位 → 补充候选 $d")
-            }
-        }
-        if (cycleHit != null) {
-            appendLog("extract 循环命中 → $cycleHit → 本地提交，跳过 LLM")
-            return cycleHit
-        }
-        if (fourCandidates.size == 1) {
-            appendLog("extract 连续4位命中 → ${fourCandidates[0]}")
-            return fourCandidates[0]
-        }
-        if (fourCandidates.size > 1) {
-            appendLog("extract 多个4位段（${fourCandidates.joinToString("、")}）无法确定 → null，交 LLM")
-        } else {
-            appendLog("extract 无4位候选 → null，交 LLM")
-        }
-        return null
     }
 
     /** 是否标准数字字（阿拉伯+中文数字字） */

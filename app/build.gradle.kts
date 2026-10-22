@@ -10,8 +10,8 @@ android {
         applicationId = "dev.xinl0707.quicksign"
         minSdk = 26
         targetSdk = 37
-        versionCode = 111
-        versionName = "3.2.8"
+        versionCode = 112
+        versionName = "3.2.9"
     }
 
     buildTypes {
