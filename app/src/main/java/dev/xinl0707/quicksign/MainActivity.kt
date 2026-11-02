@@ -139,6 +139,8 @@ class MainActivity : Activity() {
     private var resultHoursText: TextView? = null
     private var resultRatioText: TextView? = null
     private var resultStatsText: TextView? = null
+    private var resultStatsCard: LinearLayout? = null   // 考勤统计卡引用（数据就绪后做淡入过渡）
+    private var resultLoadingBar: ProgressBar? = null    // 考勤加载指示（加载中转圈）
     private var signResultShown = false     // 覆盖页显示中
     private var lastSubmitAt = 0L           // 最近一次提交签到码时间（结果判定窗口）
     private var resultWatchActive = false   // 输码后结果监听进行中
@@ -214,6 +216,7 @@ class MainActivity : Activity() {
 
     private var mimoEngine: MiMoSpeechEngine? = null
     private var listening = false
+    private var listenPaused = false               // 用户点声波条手动暂停监听；离开主界面再回来自动清除并恢复
     private var isPaused = false                  // 主界面是否在后台（设置页/课表/多任务等）：后台绝不启动麦克风监听
     private var mimoRestartCount = 0 // 自动监听下瞬时错误自动重启次数
     private var mimoSliceCount = 0  // MIMO 切片序号（识别日志细化）
@@ -221,6 +224,12 @@ class MainActivity : Activity() {
     private var lastAutoListenHintAt = 0L // 自动监听提示去重
     // ASR 转写累积池（最近 10 片 ≈ 30 秒），用于签到记录留底
     private val heardPool = ArrayDeque<String>()
+
+    // 声波条（底部双卡下方）：录音状态隐式指示——监听中 7 条波形起伏动画；暂停/未监听静止矮条。
+    // 点击临时暂停 / 再点继续；离开界面再回来自动恢复监听
+    private var waveBarWrap: LinearLayout? = null
+    private val waveBars = mutableListOf<View>()
+    private var waveAnim: ValueAnimator? = null
 
     private var manualCode = ""
     private var pendingPanelCode = "" // 网页未就绪时输满的码，就绪后自动补输
@@ -368,6 +377,8 @@ class MainActivity : Activity() {
             recreate()
             return
         }
+        // 回到主界面：用户手动暂停只对当前停留生效——离开界面再回来即自动恢复监听（声波条自动回到录音态）
+        listenPaused = false
         // 回到首页键盘面板时才恢复自动监听（其余界面不监听）
         if (signPanelShown) maybeAutoListen()
         // 底部状态栏可见性按设置开关刷新（设置页切换后返回生效）
@@ -711,7 +722,7 @@ class MainActivity : Activity() {
             b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, if (isDigit) 28f else 16f)
             b.setTypeface(if (isDigit) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT)
             b.setOnClickListener {
-                vibrate(25)   // 输入数字时清脆短震
+                vibrate()   // 输入数字时紧实短震
                 onPanelKey(d)
             }
             val lp = GridLayout.LayoutParams()
@@ -743,6 +754,38 @@ class MainActivity : Activity() {
         signPanel.addView(bottomRow, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { leftMargin = dp(16); rightMargin = dp(16); topMargin = dp(6); bottomMargin = dp(8) })
+
+        // 声波条：双卡下方，录音状态隐式指示（不显示"正在监听"文字，低调）
+        // 监听中 7 条波形起伏动画（强调色）；点击临时暂停（条变灰静止），再点继续；离开界面再回来自动恢复
+        val waveRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+        }
+        waveBars.clear()
+        (0 until 7).forEach { _ ->
+            val bar = View(this).apply {
+                background = roundedBg(ACCENT, 100)
+                pivotY = dp(14).toFloat()   // 从底部缩放，波形有"立起来"的观感
+            }
+            waveRow.addView(bar, LinearLayout.LayoutParams(dp(3), dp(14)).apply {
+                marginStart = dp(2); marginEnd = dp(2)
+            })
+            bar.scaleY = 0.25f
+            waveBars.add(bar)
+        }
+        val waveWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(0), dp(2), dp(0), dp(4))
+            addView(waveRow, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(16)
+            ))
+            setOnClickListener { onWaveBarClick() }
+        }
+        waveBarWrap = waveWrap
+        signPanel.addView(waveWrap, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(2) })
 
         val signPanelWrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -928,6 +971,15 @@ class MainActivity : Activity() {
             background = roundedBg(LIGHT, 20)
             setPadding(dp(16), dp(14), dp(16), dp(14))
         }
+        resultStatsCard = statsCard
+        // 考勤数据加载指示：签到成功瞬间先弹「正在加载考勤数据…」+ 转圈，数据就绪后收起并平滑过渡
+        resultLoadingBar = ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
+            visibility = View.GONE
+        }
+        statsCard.addView(resultLoadingBar, LinearLayout.LayoutParams(dp(28), dp(28)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(4)
+        })
         statsCard.addView(TextView(this).apply {
             text = "学勤预警"
             textSize = 12f
@@ -1080,33 +1132,53 @@ class MainActivity : Activity() {
         packageManager.getPackageInfo(packageName, 0).versionCode
     } catch (e: Exception) { 0 }
 
-    /** 震动反馈（清脆短震，仅用于：输入数字、签到成功） */
-    private fun vibrate(ms: Long = 40) {
+    /** 震动反馈（紧实短促：系统预定义点击效果，走系统触觉引擎，LRA 马达上干脆利落；
+     *  旧版用 createOneShot + DEFAULT_AMPLITUDE 振幅偏弱、发"松"）
+     *  仅用于：输入数字、设置项反馈 */
+    private fun vibrate() {
         try {
             val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
             if (v.hasVibrator()) {
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    v.vibrate(android.os.VibrationEffect.createOneShot(
-                        ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE
-                    ))
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    v.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_CLICK))
+                } else if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    // 低版本无预定义效果：满振幅 + 极短时长模拟干脆点击
+                    v.vibrate(android.os.VibrationEffect.createOneShot(25, 255))
                 } else {
                     @Suppress("DEPRECATION")
-                    v.vibrate(ms)
+                    v.vibrate(20)
                 }
             }
         } catch (e: Exception) {}
     }
 
-    /** 快速震动两下（提示错误：签到码无效） */
+    /** 签到成功震动反馈（稍重一档的系统预定义效果，依旧干脆，不拖沓） */
+    private fun vibrateHeavy() {
+        try {
+            val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            if (v.hasVibrator()) {
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    v.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_HEAVY_CLICK))
+                } else if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    v.vibrate(android.os.VibrationEffect.createOneShot(35, 255))
+                } else {
+                    @Suppress("DEPRECATION")
+                    v.vibrate(30)
+                }
+            }
+        } catch (e: Exception) {}
+    }
+
+    /** 快速震动两下（提示错误：签到码无效）——节奏收紧，双段短促 */
     private fun vibrateDouble() {
         try {
             val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
             if (v.hasVibrator()) {
                 if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 45, 35, 45), -1))
+                    v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 30, 25, 30), -1))
                 } else {
                     @Suppress("DEPRECATION")
-                    v.vibrate(longArrayOf(0, 45, 35, 45), -1)
+                    v.vibrate(longArrayOf(0, 30, 25, 30), -1)
                 }
             }
         } catch (e: Exception) {}
@@ -1390,7 +1462,7 @@ class MainActivity : Activity() {
         handler.post {
             playSplashAnimation()
         }
-        handler.postDelayed({ dismissSplash() }, 2000)
+        handler.postDelayed({ dismissSplash() }, 1400)
     }
 
     /** 播放开屏动画序列（splash 挂载到 root 之后由 post 触发，保证首帧可渲染） */
@@ -1398,30 +1470,31 @@ class MainActivity : Activity() {
         if (!::splashLayer.isInitialized) return
         try {
             val set = AnimatorSet()
-            // 1. 图标弹入（缩小放大回弹）
-            val iconAlpha = ObjectAnimator.ofFloat(splashIcon, "alpha", 0f, 1f).setDuration(420)
+            // 1. 图标弹入（缩小放大回弹）——整体节奏比旧版提速约 30%
+            val iconAlpha = ObjectAnimator.ofFloat(splashIcon, "alpha", 0f, 1f).setDuration(300)
             val iconScale = PropertyValuesHolder.ofFloat("scaleX", 0.25f, 1.12f, 1f)
             val iconScaleY = PropertyValuesHolder.ofFloat("scaleY", 0.25f, 1.12f, 1f)
             val iconZoom = ObjectAnimator.ofPropertyValuesHolder(splashIcon, iconScale, iconScaleY)
-                .setDuration(620).apply { interpolator = OvershootInterpolator(1.2f) }
+                .setDuration(440).apply { interpolator = OvershootInterpolator(1.2f) }
             // 2. 四位码槽逐个点亮（每个槽内 缩放+淡入 并行，槽之间顺序延迟）
             val slotAnim = AnimatorSet()
             splashSlots.forEachIndexed { i, s ->
                 val one = AnimatorSet()
                 one.playTogether(
-                    ObjectAnimator.ofFloat(s, "scaleX", 0f, 1f).setDuration(240),
-                    ObjectAnimator.ofFloat(s, "alpha", 0f, 1f).setDuration(240)
+                    ObjectAnimator.ofFloat(s, "scaleX", 0f, 1f).setDuration(170),
+                    ObjectAnimator.ofFloat(s, "alpha", 0f, 1f).setDuration(170)
                 )
-                one.startDelay = (i * 230).toLong()
+                one.startDelay = (i * 160).toLong()
                 slotAnim.playTogether(one)
             }
-            // 3. 标题上移淡入
+            // 3. 标题上移淡入：与四个横条轮流点亮并行开始（不再等横条全部完成），
+            //    营造「横条逐一亮起 + 标题同步上浮」的整体观感
             val titleAnim = AnimatorSet().apply {
                 playTogether(
-                    ObjectAnimator.ofFloat(splashTitle, "alpha", 0f, 1f).setDuration(420),
-                    ObjectAnimator.ofFloat(splashTitle, "translationY", dp(10).toFloat(), 0f).setDuration(420)
+                    ObjectAnimator.ofFloat(splashTitle, "alpha", 0f, 1f).setDuration(300),
+                    ObjectAnimator.ofFloat(splashTitle, "translationY", dp(10).toFloat(), 0f).setDuration(300)
                 )
-                startDelay = 900
+                startDelay = 0
             }
 
             set.playTogether(iconAlpha, iconZoom, slotAnim, titleAnim)
@@ -1436,11 +1509,11 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 淡出启动层（幂等）；页面/登录就绪也会提前调用，但保证至少展示约 2 秒（开屏动画时长），
+    /** 淡出启动层（幂等）；页面/登录就绪也会提前调用，但保证至少展示约 1.4 秒（开屏动画提速后时长），
      *  之后整层淡出，四位码槽随层一起消失，不做主页平移衔接 */
     private fun dismissSplash() {
         if (splashDismissed || !::splashLayer.isInitialized) return
-        val remain = 2000 - (System.currentTimeMillis() - splashShownAt)
+        val remain = 1400 - (System.currentTimeMillis() - splashShownAt)
         if (remain > 0) {
             handler.postDelayed({ dismissSplash() }, remain)
             return
@@ -2441,7 +2514,7 @@ class MainActivity : Activity() {
         invalidOverlay?.visibility = View.GONE
         resultWatchActive = false
         hideResultWaiting()                        // 收掉结果等待转圈
-        vibrate(60)                                // 签到成功震动反馈（清脆单震）
+        vibrateHeavy()                             // 签到成功震动反馈（紧实有力的单震）
         // URL 已跳 detail = 签到成功：立即弹覆盖页（先显示「签到成功 / 加载考勤数据中…」），
         // 不给用户"键盘消失后干等"的空白期；考勤数据异步就绪后由 extract() 原位更新，不再二次弹窗。
         showSignResultOverlay(loading = true)
@@ -2504,6 +2577,18 @@ class MainActivity : Activity() {
         val reStats = Regex("正常\\s*(\\d+).*?请假\\s*(\\d+).*?迟到\\s*(\\d+).*?旷课\\s*(\\d+)", RegexOption.DOT_MATCHES_ALL)
         reStats.find(text)?.let { m ->
             resultStatsText?.text = "正常 ${m.groupValues[1]}    请假 ${m.groupValues[2]}    迟到 ${m.groupValues[3]}    旷课 ${m.groupValues[4]}"
+        }
+        // 数据就绪：收起加载转圈，考勤统计卡与课程名做淡入 + 轻微上移过渡——
+        // 替代旧版"loading 文案瞬间被替换成真实数据"的生硬跳变
+        resultLoadingBar?.visibility = View.GONE
+        resultStatsCard?.let {
+            it.alpha = 0f
+            it.translationY = dp(8).toFloat()
+            it.animate().alpha(1f).translationY(0f).setDuration(260).start()
+        }
+        resultCourseText?.let {
+            it.alpha = 0f
+            it.animate().alpha(1f).setDuration(260).setStartDelay(60).start()
         }
     }
 
@@ -2611,6 +2696,9 @@ class MainActivity : Activity() {
             resultHoursText?.text = "—"
             resultRatioText?.text = "—"
             resultStatsText?.text = "—"
+            resultLoadingBar?.visibility = View.VISIBLE
+            resultStatsCard?.alpha = 1f
+            resultStatsCard?.translationY = 0f
         }
         val ov = resultOverlay ?: return
         ov.alpha = 0f
@@ -2676,17 +2764,76 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 点击更新徽标：有更新则弹窗展示更新日志（Markdown 渲染）；检查失败则 toast 提示并重试 */
+    /** 点击更新徽标：有更新则弹窗展示更新日志（Markdown 渲染）；检查失败则弹失败弹窗（失败信息 + GitHub 链接） */
     private fun onUpdateBadgeClick() {
         val info = updateInfo
         if (info != null) {
             showUpdateOverlay(info)
         } else {
-            toast("更新检查失败，请稍后重试或前往 GitHub 查看")
-            // 点击失败徽标后重试一次
+            showUpdateFailOverlay()
+        }
+    }
+
+    /** 检查失败弹窗（自绘，与更新弹窗同风格）：显示失败原因 + GitHub 仓库链接跳转 + 重新检查。
+     *  替代旧版"只弹 toast 提示去 GitHub 查看"——toast 一闪而过，用户无从操作 */
+    private fun showUpdateFailOverlay() {
+        val mask = View(this).apply { setBackgroundColor(0x66000000.toInt()) }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(24), dp(22), dp(24), dp(18))
+        }
+        card.addView(TextView(this).apply {
+            text = "检查更新失败"
+            textSize = 19f
+            gravity = Gravity.CENTER
+            setTextColor(TEXT)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        card.addView(TextView(this).apply {
+            text = "暂时无法连接 GitHub 检查新版本（网络异常或接口限流）。\n可前往仓库 Releases 页面自行查看并下载最新 APK。"
+            textSize = 14f
+            setTextColor(SUB)
+            setLineSpacing(1.3f, 1.0f)
+            setPadding(dp(0), dp(12), dp(0), dp(0))
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val linkBtn = button("前往 GitHub 仓库", ACCENT, 0xFFFFFFFF.toInt(), big = true, radius = 16)
+        linkBtn.setOnClickListener {
+            rootFrame.removeView(mask); rootFrame.removeView(card)
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/xinl0707/HDU-skl-quicksign/releases")))
+            } catch (e: Exception) {
+                toast("未找到可打开链接的应用")
+            }
+        }
+        row.addView(linkBtn, LinearLayout.LayoutParams(
+            0, dp(44), 1f
+        ).apply { marginEnd = dp(6) })
+        val retryBtn = button("重新检查", LIGHT, TEXT, big = true, radius = 16)
+        retryBtn.setOnClickListener {
+            rootFrame.removeView(mask); rootFrame.removeView(card)
             updateChecked = false
             checkUpdateSilent()
         }
+        row.addView(retryBtn, LinearLayout.LayoutParams(
+            0, dp(44), 1f
+        ).apply { marginStart = dp(6) })
+        card.addView(row, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(16) })
+        rootFrame.addView(mask, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(card, FrameLayout.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(48), ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        card.alpha = 0f; card.scaleX = 0.94f; card.scaleY = 0.94f
+        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
     }
 
     /** 自绘更新弹窗（与 App 其余浮层同风格，不用系统 AlertDialog）：标题 + Markdown 渲染的更新日志（可滚动）+ 去下载 / 稍后 */
@@ -2777,6 +2924,7 @@ class MainActivity : Activity() {
         val engine = MiMoSpeechEngine(key, credStore.mimoBaseUrl(), credStore.mimoAsrModel())
         mimoEngine = engine
         listening = true
+        startWaveAnim()   // 声波条：监听中波形起伏（隐式录音指示）
         mimoRestartCount = 0
         mimoSliceCount = 0
         heardPool.clear()
@@ -2855,6 +3003,7 @@ class MainActivity : Activity() {
     /** 自动监听：登录进入签到页后自动开始持续切片识别（仅 MIMO 引擎 + 已配 Key） */
     private fun maybeAutoListen() {
         if (!credStore.autoListen()) return
+        if (listenPaused) return   // 用户手动暂停中：不自动拉起（离开界面再回来自动清除恢复）
         // 主界面在后台（设置页/课表/多任务/切走）：绝不启动监听——pollTick 后台仍会轮询，
         // 不加此判断会在用户切到设置页后重新拉起麦克风（曾实测在设置页说话仍被识别提交）
         if (isPaused) return
@@ -3071,12 +3220,70 @@ class MainActivity : Activity() {
         try { mimoEngine?.stop() } catch (e: Exception) {}
         mimoEngine = null
         listening = false
+        stopWaveAnim()
     }
 
     private fun stopListeningQuiet() {
         try { mimoEngine?.stop() } catch (e: Exception) {}
         mimoEngine = null
         listening = false
+        stopWaveAnim()
+    }
+
+    // ------------------------------------------------------------------ 声波条（录音指示）
+
+    /** 启动波形动画：7 条竖条按正弦相位错落起伏，模拟录音声波（监听中常驻） */
+    private fun startWaveAnim() {
+        if (waveAnim != null) return
+        waveBars.forEach { it.background = roundedBg(ACCENT, 100) }
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 800
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener {
+                val t = it.animatedFraction
+                waveBars.forEachIndexed { i, b ->
+                    val h = 0.3f + 0.7f * Math.abs(Math.sin(t * 2 * Math.PI + i * 0.9)).toFloat()
+                    b.scaleY = h
+                }
+            }
+        }
+        anim.start()
+        waveAnim = anim
+    }
+
+    /** 停止波形动画：竖条回到静止矮条（暂停/停止监听状态） */
+    private fun stopWaveAnim() {
+        waveAnim?.cancel()
+        waveAnim = null
+        waveBars.forEach { it.scaleY = 0.25f }
+    }
+
+    /** 声波条点击：监听中 → 临时暂停（条变灰静止）；暂停/未监听 → 继续监听 */
+    private fun onWaveBarClick() {
+        if (listening) {
+            listenPaused = true
+            stopListeningQuiet()
+            waveBars.forEach { it.background = roundedBg(SUB, 100) }
+            opLog("监听", "声波条点击：临时暂停监听")
+            toast("已临时暂停监听（离开界面再回来会自动恢复）")
+            return
+        }
+        if (!credStore.autoListen()) {
+            toast("自动监听未开启（设置 → 语音识别引擎 → 自动语音监听）")
+            return
+        }
+        if (credStore.mimoApiKey().isNullOrBlank()) {
+            toast("未配置 MIMO API Key，无法开启监听")
+            return
+        }
+        listenPaused = false
+        waveBars.forEach { it.background = roundedBg(ACCENT, 100) }
+        if (signPanelShown && signReady && !signResultShown && !invalidShown && !isPaused) {
+            maybeAutoListen()
+            toast(if (listening) "已继续监听" else "当前无法启动监听（需在签到面板）")
+        } else {
+            toast("当前不在签到面板，回到签到面板后会自动恢复监听")
+        }
     }
 
     // ------------------------------------------------------------------ 权限

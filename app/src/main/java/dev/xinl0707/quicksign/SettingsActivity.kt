@@ -161,14 +161,19 @@ class SettingsActivity : Activity() {
             setColor(color)
         }
 
-    private fun vibrate(ms: Long = 15) {
+    /** 震动反馈（紧实短促：系统预定义点击效果走系统触觉引擎；旧版 createOneShot + DEFAULT_AMPLITUDE 振幅偏弱发"松"） */
+    private fun vibrate() {
         try {
             val v = getSystemService(VIBRATOR_SERVICE) as? Vibrator ?: return
-            if (Build.VERSION.SDK_INT >= 26) {
-                v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+            if (!v.hasVibrator()) return
+            if (Build.VERSION.SDK_INT >= 29) {
+                v.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+            } else if (Build.VERSION.SDK_INT >= 26) {
+                // 低版本无预定义效果：满振幅 + 极短时长模拟干脆点击
+                v.vibrate(VibrationEffect.createOneShot(25, 255))
             } else {
                 @Suppress("DEPRECATION")
-                v.vibrate(ms)
+                v.vibrate(20)
             }
         } catch (e: Exception) {}
     }
@@ -234,7 +239,7 @@ class SettingsActivity : Activity() {
         track.addView(knob, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER_VERTICAL or Gravity.START))
         track.setOnClickListener {
             state = !state
-            vibrate(15)
+            vibrate()
             track.background = roundedBg(if (state) ACCENT else TRACK_OFF, 100)
             val targetX = if (state) track.width - knob.width - dp(4) else 0f
             knob.animate().translationX(targetX.toFloat()).setDuration(180)
@@ -430,16 +435,25 @@ class SettingsActivity : Activity() {
             gravity = Gravity.CENTER
             setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         })
+        // 免责声明正文：外层 ScrollView 承载滚动（自带 fling 惯性，松手后继续滚动），
+        // 不再用 TextView 的 ScrollingMovementMethod 内滚（那种"滑多少动多少"没有惯性，非常卡手）
+        val bodyScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        }
         val body = TextView(this).apply {
             text = Markdown.toSpanned(Disclaimer.TEXT_TEMPLATE.replace("__VER__", appVersion()))
             textSize = 13f
             setTextColor(TEXT)
             setLineSpacing(1.3f, 1.0f)
-            setVerticalScrollBarEnabled(true)
-            movementMethod = android.text.method.ScrollingMovementMethod()
         }
+        bodyScroll.addView(body, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
         val maxH = (resources.displayMetrics.heightPixels * 0.52f).toInt()
-        card.addView(body, LinearLayout.LayoutParams(
+        card.addView(bodyScroll, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, maxH
         ).apply { topMargin = dp(10) })
         val close = button("关闭", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
@@ -714,7 +728,7 @@ class SettingsActivity : Activity() {
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                 ))
                 card.setOnClickListener {
-                    vibrate(15)
+                    vibrate()
                     getSharedPreferences("settings", MODE_PRIVATE).edit()
                         .putString(ThemePalette.KEY_STYLE, s).commit()
                     DebugLog.info("设置", "切换主题风格为「${ThemePalette.styleLabel(s)}」（返回主界面后生效）")
@@ -907,7 +921,7 @@ class SettingsActivity : Activity() {
         }
         header.setOnClickListener {
             expanded = !expanded
-            vibrate(10)
+            vibrate()
             arrow.animate().rotation(if (expanded) 90f else 0f).setDuration(180).start()
             if (expanded) {
                 bodyBox.visibility = View.VISIBLE
