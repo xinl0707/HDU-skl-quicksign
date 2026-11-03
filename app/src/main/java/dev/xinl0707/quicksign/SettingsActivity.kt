@@ -764,7 +764,7 @@ class SettingsActivity : Activity() {
 
         // ========== 关于与调试 ==========
         val aboutBlock = block("关于与调试")
-        aboutBlock.addView(switchRow("调试日志", "记录运行过程，导出可定位问题", credStore.debugEnabled()) { checked ->
+        aboutBlock.addView(switchRow("显示运行日志", "日志始终自动记录；此开关仅控制本页实时显示", credStore.debugEnabled()) { checked ->
             credStore.setDebugEnabled(checked)
             logText.visibility = if (checked) View.VISIBLE else View.GONE
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -1017,16 +1017,71 @@ class SettingsActivity : Activity() {
         return true
     }
 
-    /** 导出调试记录：日志全文 + 页面抓取详情，保存到本机并调起分享（发到微信/备忘录均可） */
+    /** 导出调试记录：先弹时间范围选择（按「几月几日几点几分 App 打开」筛选日志），再保存+分享 */
     private fun exportDebug() {
-        DebugLog.info("设置", "导出调试记录")
+        val mask = View(this).apply { setBackgroundColor(0x66000000.toInt()) }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(CARD, 20)
+            setPadding(dp(22), dp(18), dp(22), dp(16))
+        }
+        card.addView(label("导出调试记录", 17f, TEXT).apply {
+            gravity = Gravity.CENTER
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        })
+        card.addView(label("选择导出范围：自所选打开时刻起，至当前的日志", 11f, SUB).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(0), dp(6), dp(0), dp(0))
+        })
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val sessions = DebugLog.sessionStarts()
+        sessions.forEachIndexed { i, ts ->
+            // 最近一次登记为「本次打开」，其余按完整时刻展示（几月几日几点几分打开）
+            val text = if (i == sessions.size - 1) "本次打开 · ${DebugLog.formatSession(ts)}"
+                       else "打开 · ${DebugLog.formatSession(ts)}"
+            val row = button(text, LIGHT, TEXT, radius = 14)
+            row.setOnClickListener {
+                rootFrame.removeView(mask); rootFrame.removeView(card)
+                doExport(DebugLog.dumpFrom(ts))
+            }
+            list.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42)
+            ).apply { topMargin = if (i == 0) dp(8) else dp(6) })
+        }
+        val allRow = button("导出全部日志", LIGHT, ACCENT, radius = 14)
+        allRow.setOnClickListener {
+            rootFrame.removeView(mask); rootFrame.removeView(card)
+            doExport(DebugLog.dump())
+        }
+        list.addView(allRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(42)
+        ).apply { topMargin = dp(6) })
+        val cancel = button("取消", ACCENT, 0xFFFFFFFF.toInt(), radius = 16)
+        cancel.setOnClickListener { rootFrame.removeView(mask); rootFrame.removeView(card) }
+        list.addView(cancel, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
+        ).apply { topMargin = dp(10) })
+        card.addView(list)
+        rootFrame.addView(mask, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(card, FrameLayout.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(40), ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+        card.alpha = 0f; card.scaleX = 0.94f; card.scaleY = 0.94f
+        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
+    }
+
+    /** 实际导出：指定日志内容 + 页面抓取详情，保存到本机并调起分享（发到微信/备忘录均可） */
+    private fun doExport(logs: String) {
+        DebugLog.info("设置", "执行调试记录导出")
         try {
             val sb = StringBuilder()
             sb.append("上课啦 调试导出 ")
                 .append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()))
                 .append("\n")
             sb.append("========================================\n")
-            sb.append("【运行日志】\n").append(DebugLog.dump())
+            sb.append("【运行日志】\n").append(logs)
             sb.append("\n========================================\n")
             sb.append("【页面抓取详情】（覆盖界面设计依据）\n").append(DebugLog.capturesText())
             val content = sb.toString()

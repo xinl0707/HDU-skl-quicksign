@@ -230,6 +230,19 @@ class MainActivity : Activity() {
     private var waveBarWrap: LinearLayout? = null
     private val waveBars = mutableListOf<View>()
     private var waveAnim: ValueAnimator? = null
+    // 声波条点击反馈的简洁提示（替代 toast：声波条上方一行小字，短暂显示后自动消失）
+    private var waveHint: android.widget.TextView? = null
+    private val waveHintTask = Runnable {
+        // 提示消失动画：淡出 + 上移
+        waveHint?.animate()?.alpha(0f)?.translationY(-dp(4).toFloat())?.setDuration(200)
+            ?.withEndAction { waveHint?.visibility = View.GONE }?.start()
+    }
+    // 声波条真实振幅：引擎 onAmplitude 回调写入（0~1），动画循环平滑后驱动 7 根条
+    @Volatile
+    private var waveLevel = 0f
+    private var waveSmooth = 0f
+    private val waveHistory = FloatArray(14)   // 近 14 帧振幅历史（条间延迟形成声波流动感）
+    private var waveHistPos = 0
 
     private var manualCode = ""
     private var pendingPanelCode = "" // 网页未就绪时输满的码，就绪后自动补输
@@ -291,6 +304,7 @@ class MainActivity : Activity() {
         }
         trace("onCreate start")
         try {
+            DebugLog.markSessionStart()   // 登记本次打开时刻：导出日志可筛「几月几日几点几分打开后的全部日志」
             credStore = CredentialStore(this)
             recordStore = SignRecordStore(this)
             lastAppliedStyle = themeStyle()
@@ -782,6 +796,17 @@ class MainActivity : Activity() {
             ))
             setOnClickListener { onWaveBarClick() }
         }
+        // 声波条上方的简洁提示（点击暂停/恢复时短暂显示，不打断操作）
+        val waveHintTv = android.widget.TextView(this).apply {
+            textSize = 11f
+            setTextColor(SUB)
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        waveWrap.addView(waveHintTv, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        waveHint = waveHintTv
         waveBarWrap = waveWrap
         signPanel.addView(waveWrap, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1470,29 +1495,30 @@ class MainActivity : Activity() {
         if (!::splashLayer.isInitialized) return
         try {
             val set = AnimatorSet()
-            // 1. 图标弹入（缩小放大回弹）——整体节奏比旧版提速约 30%
-            val iconAlpha = ObjectAnimator.ofFloat(splashIcon, "alpha", 0f, 1f).setDuration(300)
+            // 1. 图标弹入（缩小放大回弹）——时长回归 420/620（此前提速版 300/440 观感太赶），
+            //    整体时长由「横条轮流 + 标题并行 + 槽间延迟 100ms」协调
+            val iconAlpha = ObjectAnimator.ofFloat(splashIcon, "alpha", 0f, 1f).setDuration(420)
             val iconScale = PropertyValuesHolder.ofFloat("scaleX", 0.25f, 1.12f, 1f)
             val iconScaleY = PropertyValuesHolder.ofFloat("scaleY", 0.25f, 1.12f, 1f)
             val iconZoom = ObjectAnimator.ofPropertyValuesHolder(splashIcon, iconScale, iconScaleY)
-                .setDuration(440).apply { interpolator = OvershootInterpolator(1.2f) }
-            // 2. 四位码槽逐个点亮（每个槽内 缩放+淡入 并行，槽之间顺序延迟）
+                .setDuration(620).apply { interpolator = OvershootInterpolator(1.2f) }
+            // 2. 四位码槽逐个点亮（每个槽内 缩放+淡入 并行，槽之间顺序延迟 100ms）
             val slotAnim = AnimatorSet()
             splashSlots.forEachIndexed { i, s ->
                 val one = AnimatorSet()
                 one.playTogether(
-                    ObjectAnimator.ofFloat(s, "scaleX", 0f, 1f).setDuration(170),
-                    ObjectAnimator.ofFloat(s, "alpha", 0f, 1f).setDuration(170)
+                    ObjectAnimator.ofFloat(s, "scaleX", 0f, 1f).setDuration(240),
+                    ObjectAnimator.ofFloat(s, "alpha", 0f, 1f).setDuration(240)
                 )
-                one.startDelay = (i * 160).toLong()
+                one.startDelay = (i * 100).toLong()
                 slotAnim.playTogether(one)
             }
             // 3. 标题上移淡入：与四个横条轮流点亮并行开始（不再等横条全部完成），
-            //    营造「横条逐一亮起 + 标题同步上浮」的整体观感
+            //    营造「横条逐一亮起 + 标题同步上浮」的整体观感（时长回归 420）
             val titleAnim = AnimatorSet().apply {
                 playTogether(
-                    ObjectAnimator.ofFloat(splashTitle, "alpha", 0f, 1f).setDuration(300),
-                    ObjectAnimator.ofFloat(splashTitle, "translationY", dp(10).toFloat(), 0f).setDuration(300)
+                    ObjectAnimator.ofFloat(splashTitle, "alpha", 0f, 1f).setDuration(420),
+                    ObjectAnimator.ofFloat(splashTitle, "translationY", dp(10).toFloat(), 0f).setDuration(420)
                 )
                 startDelay = 0
             }
@@ -2938,6 +2964,12 @@ class MainActivity : Activity() {
                 if (text.contains("监听")) addSpeechInfo("MIMO", "开始持续监听…（每 3 秒切片、最近 10 秒）")
             }
 
+            /** 实时振幅回调：直接写入声波条驱动值（0~1），由 startWaveAnim 平滑后驱动 7 根条 */
+            override fun onAmplitude(level: Float) {
+                if (epoch != mimoEpoch || !listening) return
+                waveLevel = level
+            }
+
             override fun onResult(text: String) {
                 if (epoch != mimoEpoch || !listening || filling) return   // 旧代际残留/已停止/正在输码，一律丢弃
                 mimoSliceCount++
@@ -3232,18 +3264,30 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ 声波条（录音指示）
 
-    /** 启动波形动画：7 条竖条按正弦相位错落起伏，模拟录音声波（监听中常驻） */
+    /** 启动波形动画：7 条竖条跟随真实麦克风振幅（引擎 onAmplitude 回调），
+     *  每条显示不同时刻的振幅（右侧最新、左侧滞后），形成声波流动观感；静音时安静低落 */
     private fun startWaveAnim() {
         if (waveAnim != null) return
-        waveBars.forEach { it.background = roundedBg(ACCENT, 100) }
+        waveBars.forEach { it.background = roundedBg(ACCENT, 100); it.alpha = 1f }
+        waveSmooth = 0f
+        java.util.Arrays.fill(waveHistory, 0f)
+        waveHistPos = 0
         val anim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 800
+            duration = 1000
             repeatCount = ValueAnimator.INFINITE
             addUpdateListener {
-                val t = it.animatedFraction
+                // 平滑振幅（新值 30% + 旧值 70%），抹平单帧毛刺
+                waveSmooth = waveSmooth * 0.7f + waveLevel * 0.3f
+                waveHistory[waveHistPos] = waveSmooth
+                waveHistPos = (waveHistPos + 1) % waveHistory.size
                 waveBars.forEachIndexed { i, b ->
-                    val h = 0.3f + 0.7f * Math.abs(Math.sin(t * 2 * Math.PI + i * 0.9)).toFloat()
-                    b.scaleY = h
+                    // 第 i 根条显示 (size-1-i) 帧前的振幅：左旧右新，声波从左向右流动
+                    val lag = waveHistory.size - 1 - i
+                    val idx = (waveHistPos - 1 - lag + waveHistory.size * 2) % waveHistory.size
+                    val h = waveHistory[idx]
+                    // 固定包络：中间两根最高、两侧递减，保持声波轮廓
+                    val env = when (i) { 0, 6 -> 0.78f; 1, 5 -> 0.92f; else -> 1.05f }
+                    b.scaleY = (0.08f + h * 0.92f) * env
                 }
             }
         }
@@ -3258,31 +3302,49 @@ class MainActivity : Activity() {
         waveBars.forEach { it.scaleY = 0.25f }
     }
 
-    /** 声波条点击：监听中 → 临时暂停（条变灰静止）；暂停/未监听 → 继续监听 */
+    /** 声波条点击反馈：声波条上方一行小字淡入上浮，停留 1.8s 后淡出上移消失（替代 toast，不打断操作） */
+    private fun showWaveHint(msg: String) {
+        val h = waveHint ?: return
+        h.text = msg
+        h.removeCallbacks(waveHintTask)
+        h.visibility = View.VISIBLE
+        h.alpha = 0f
+        h.translationY = dp(6).toFloat()
+        h.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        h.postDelayed(waveHintTask, 1800)
+    }
+
+    /** 声波条点击：监听中 → 临时暂停（条变灰半透明静止）；暂停/未监听 → 继续监听 */
     private fun onWaveBarClick() {
         if (listening) {
             listenPaused = true
             stopListeningQuiet()
-            waveBars.forEach { it.background = roundedBg(SUB, 100) }
+            waveBars.forEach {
+                it.background = roundedBg(SUB, 100)
+                it.animate().alpha(0.55f).setDuration(200).start()
+            }
             opLog("监听", "声波条点击：临时暂停监听")
-            toast("已临时暂停监听（离开界面再回来会自动恢复）")
+            showWaveHint("已暂停监听 · 点击恢复")
             return
         }
         if (!credStore.autoListen()) {
-            toast("自动监听未开启（设置 → 语音识别引擎 → 自动语音监听）")
+            showWaveHint("未开启自动监听 · 可在设置开启")
             return
         }
         if (credStore.mimoApiKey().isNullOrBlank()) {
-            toast("未配置 MIMO API Key，无法开启监听")
+            showWaveHint("未配置 MIMO API Key")
             return
         }
         listenPaused = false
-        waveBars.forEach { it.background = roundedBg(ACCENT, 100) }
+        waveBars.forEach {
+            it.background = roundedBg(ACCENT, 100)
+            it.animate().alpha(1f).setDuration(200).start()
+        }
         if (signPanelShown && signReady && !signResultShown && !invalidShown && !isPaused) {
             maybeAutoListen()
-            toast(if (listening) "已继续监听" else "当前无法启动监听（需在签到面板）")
+            showWaveHint(if (listening) "已继续监听" else "需在签到面板监听")
         } else {
-            toast("当前不在签到面板，回到签到面板后会自动恢复监听")
+            showWaveHint("回到签到面板后自动恢复监听")
         }
     }
 
@@ -3419,8 +3481,8 @@ class MainActivity : Activity() {
         toast(msg)
     }
 
+    /** 详细日志（自动计入：不受「调试日志」开关限制，始终写入 DebugLog，导出可定位问题） */
     private fun appendLog(msg: String) {
-        if (!credStore.debugEnabled()) return
         DebugLog.append(msg)
     }
 

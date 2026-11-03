@@ -1,6 +1,8 @@
 package dev.xinl0707.quicksign
 
 import android.app.Activity
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
@@ -294,6 +296,13 @@ class SignRecordDetailActivity : Activity() {
             ).apply { bottomMargin = dp(10) })
         }
 
+        // ========== 导出本次签到日志 ==========
+        val exportBtn = button("导出本次签到日志", LIGHT, ACCENT, big = true, radius = 16)
+        exportBtn.setOnClickListener { exportSessionLog(rec) }
+        content.addView(exportBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(4) })
+
         val scroll = ScrollView(this).apply {
             addView(content, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -346,5 +355,67 @@ class SignRecordDetailActivity : Activity() {
         b.minHeight = dp(if (big) 46f else 40f)
         b.setPadding(dp(10), 0, dp(10), 0)
         return b
+    }
+
+    /** 导出「本次打开 App → 本次签到完全成功」的日志：保存到下载目录并调起分享 */
+    private fun exportSessionLog(rec: SignRecord) {
+        val startTs = DebugLog.currentSessionStart()
+        val endTs = if (rec.tsResult > 0) rec.tsResult
+                    else if (rec.tsSubmit > 0) rec.tsSubmit
+                    else System.currentTimeMillis()
+        val logText = if (startTs > 0) DebugLog.dumpFrom(startTs, endTs) else DebugLog.dump()
+        DebugLog.info("详情", "导出本次签到日志（自 ${DebugLog.formatSession(startTs)} 打开 → 签到完成）")
+        try {
+            val sb = StringBuilder()
+            sb.append("上课啦 签到日志导出 ")
+                .append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date()))
+                .append("\n")
+            sb.append("范围：自 ${DebugLog.formatSession(startTs)} App 打开，至本次签到完全成功\n")
+            sb.append("========================================\n")
+            sb.append("【运行日志】\n").append(logText)
+            val content = sb.toString()
+
+            var savedPath = ""
+            try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "signlog_${System.currentTimeMillis()}.txt")
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/上课啦")
+                        put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+                        values.clear()
+                        values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                        contentResolver.update(uri, values, null, null)
+                        savedPath = "下载/上课啦/signlog_xxx.txt（文件管理器中查看）"
+                    }
+                } else {
+                    val dir = getExternalFilesDir("logs") ?: filesDir
+                    if (!dir.exists()) dir.mkdirs()
+                    val f = java.io.File(dir, "signlog_${System.currentTimeMillis()}.txt")
+                    f.writeText(content)
+                    savedPath = f.absolutePath
+                }
+            } catch (e: Exception) {
+                savedPath = ""
+            }
+
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "上课啦签到日志")
+                putExtra(Intent.EXTRA_TEXT, content)
+            }
+            startActivity(Intent.createChooser(send, "导出本次签到日志"))
+            toast(if (savedPath.isNotEmpty()) "已保存：$savedPath" else "已调起分享")
+        } catch (e: Exception) {
+            toast("导出失败：${e.message}")
+        }
+    }
+
+    private fun toast(msg: String) {
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
     }
 }

@@ -37,6 +37,9 @@ class MiMoSpeechEngine(
         /** 每个切片识别出的文本（可能为空串，表示该段无有效语音内容） */
         fun onResult(text: String)
         fun onError(message: String)
+        /** 实时录音振幅（0~1，约 25Hz）：由录音线程按 20ms PCM 块计算 RMS 归一化后回传，
+         *  供界面声波条按真实麦克风输入波动（不再用规律假波动） */
+        fun onAmplitude(level: Float) {}
     }
 
     companion object {
@@ -101,9 +104,22 @@ class MiMoSpeechEngine(
                 rec!!.startRecording()
                 cbSafe(cb) { it.onState("持续监听中…") }
                 val shortBuf = ShortArray(320) // 20ms @16k
+                var ampTick = 0
                 while (!stopped) {
                     val n = rec!!.read(shortBuf, 0, shortBuf.size)
                     if (n <= 0) continue
+                    // 实时振幅：本块 RMS 归一化（0~1），每 2 块（约 40ms/25Hz）回传一次主线程
+                    var sum = 0.0
+                    for (i in 0 until n) {
+                        val v = shortBuf[i].toDouble()
+                        sum += v * v
+                    }
+                    val rms = if (n > 0) sqrt(sum / n) / 32768.0 else 0.0
+                    ampTick++
+                    if (ampTick % 2 == 0) {
+                        val level = (rms * 8.0).coerceAtMost(1.0).toFloat()   // 增益 8 倍，低音量也可见
+                        cbSafe(cb) { it.onAmplitude(level) }
+                    }
                     synchronized(lock) {
                         for (i in 0 until n) {
                             val v = shortBuf[i].toInt()
